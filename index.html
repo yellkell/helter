@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no"
+    />
+    <meta
+      name="description"
+      content="HELTER SKELTER — ride a gigantic seaside helter skelter in VR. Lean between the gates, all the way down."
+    />
+    <title>HELTER SKELTER — VR Ride</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23fff4e0'/%3E%3Cpath d='M12 4h8l3 24H9z' fill='%23e8322e'/%3E%3Cpath d='M10 12h12M9.5 18h13M9 24h14' stroke='%23fff4e0' stroke-width='2.4'/%3E%3C/svg%3E"
+    />
+    <style>
+      :root {
+        --red: #e8322e;
+        --cream: #fff4e0;
+        --sea: #1e6f9e;
+        --gold: #f4c542;
+        --ink: #1a1614;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--ink);
+        overflow: hidden;
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      }
+      #scene-container {
+        position: fixed;
+        inset: 0;
+      }
+      #scene-container canvas {
+        display: block;
+      }
+      .overlay {
+        position: fixed;
+        z-index: 10;
+        pointer-events: none;
+        user-select: none;
+      }
+      #wordmark {
+        top: 18px;
+        left: 22px;
+        font-weight: 900;
+        font-size: 15px;
+        letter-spacing: 0.34em;
+        color: var(--cream);
+        text-shadow:
+          0 1px 0 var(--red),
+          0 0 14px rgba(0, 0, 0, 0.45);
+      }
+      #hint {
+        bottom: 18px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        color: rgba(255, 255, 255, 0.78);
+        text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+      }
+
+      /* --- 2D intro / landing page --- */
+      #intro {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        pointer-events: auto;
+        background:
+          linear-gradient(180deg, #5fb3e6 0%, #b9e0f5 48%, #2a7fb0 49%, #1e6f9e 100%);
+        transition: opacity 0.6s ease;
+      }
+      #intro::before {
+        /* candy-stripe awning across the top */
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 34px;
+        background: repeating-linear-gradient(
+          90deg,
+          var(--red) 0 44px,
+          var(--cream) 44px 88px
+        );
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+      }
+      #intro.gone {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #intro .logo {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        line-height: 0.92;
+        animation: floaty 5s ease-in-out infinite;
+      }
+      #intro .logo .big {
+        font-size: clamp(54px, 11vw, 132px);
+        font-weight: 900;
+        letter-spacing: 0.04em;
+        color: var(--cream);
+        text-shadow:
+          0 3px 0 var(--red),
+          0 6px 0 #a5201d,
+          0 14px 30px rgba(0, 0, 0, 0.35);
+      }
+      #intro .logo .small {
+        margin-top: 14px;
+        font-size: clamp(11px, 1.4vw, 15px);
+        letter-spacing: 0.5em;
+        color: var(--ink);
+        text-transform: uppercase;
+        background: var(--gold);
+        padding: 6px 18px;
+        border-radius: 3px;
+        box-shadow: 0 2px 0 #b58f1f;
+      }
+      @keyframes floaty {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-8px);
+        }
+      }
+      #intro .buttons {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        margin-top: 40px;
+      }
+      #intro button {
+        font-family: inherit;
+        cursor: pointer;
+        border: none;
+        border-radius: 6px;
+        font-weight: 800;
+        letter-spacing: 0.24em;
+        transition:
+          transform 0.12s ease,
+          box-shadow 0.2s ease,
+          background 0.2s ease;
+      }
+      #enter-vr {
+        padding: 18px 54px;
+        font-size: 21px;
+        color: var(--cream);
+        background: linear-gradient(180deg, #ff5a4f, var(--red));
+        box-shadow:
+          0 4px 0 #9b1f1c,
+          0 12px 28px rgba(0, 0, 0, 0.3);
+      }
+      #enter-vr:hover {
+        transform: translateY(-2px) scale(1.02);
+      }
+      #enter-vr.disabled {
+        background: #7d8a94;
+        color: rgba(255, 255, 255, 0.55);
+        box-shadow: none;
+        cursor: not-allowed;
+      }
+      #play-browser {
+        padding: 11px 30px;
+        font-size: 13px;
+        color: var(--ink);
+        background: rgba(255, 244, 224, 0.85);
+        border: 1px solid rgba(26, 22, 20, 0.25);
+      }
+      #play-browser:hover {
+        background: var(--cream);
+        transform: translateY(-1px);
+      }
+      #vr-status {
+        margin-top: 20px;
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        color: rgba(255, 255, 255, 0.9);
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+        min-height: 14px;
+        text-transform: uppercase;
+        text-align: center;
+        padding: 0 20px;
+      }
+
+      /* --- loading --- */
+      #loading {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: #5fb3e6;
+        transition: opacity 0.6s ease;
+      }
+      #loading.done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #loading .bar {
+        width: 180px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.35);
+        overflow: hidden;
+      }
+      #loading .bar::after {
+        content: '';
+        display: block;
+        height: 100%;
+        width: 40%;
+        background: var(--red);
+        animation: scan 1.1s ease-in-out infinite alternate;
+      }
+      @keyframes scan {
+        from {
+          transform: translateX(-40%);
+        }
+        to {
+          transform: translateX(250%);
+        }
+      }
+      #loading .label {
+        font-size: 12px;
+        letter-spacing: 0.5em;
+        color: var(--cream);
+        font-weight: 800;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="scene-container"></div>
+
+    <div class="overlay" id="wordmark" hidden>HELTER SKELTER</div>
+
+    <div class="overlay" id="hint" hidden>
+      BEST IN VR &middot; LEAN LEFT / RIGHT TO PASS THE GATES &middot; DESKTOP: A / D OR ARROW KEYS
+    </div>
+
+    <div id="intro" hidden>
+      <div class="logo">
+        <span class="big">HELTER</span>
+        <span class="big">SKELTER</span>
+        <span class="small">the biggest slide on the coast</span>
+      </div>
+      <div class="buttons">
+        <button id="enter-vr">ENTER VR</button>
+        <button id="play-browser">RIDE IN BROWSER</button>
+      </div>
+      <div id="vr-status">Checking for a headset&hellip;</div>
+    </div>
+
+    <div id="loading">
+      <div class="label">CLIMBING THE TOWER</div>
+      <div class="bar"></div>
+    </div>
+
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

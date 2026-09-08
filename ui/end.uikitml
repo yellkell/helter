@@ -1,0 +1,53 @@
+<style>
+  .panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 52;
+    padding: 3;
+    background-color: #fff4e0;
+    border-color: #e8322e;
+    border-width: 0.3;
+    border-radius: 2.5;
+  }
+  #end-title {
+    font-size: 5.5;
+    font-weight: bold;
+    letter-spacing: 1;
+    color: #e8322e;
+    text-align: center;
+    margin-top: 1;
+  }
+  #end-stats {
+    font-size: 2.3;
+    letter-spacing: 0.5;
+    color: #1a1614;
+    text-align: center;
+    margin-top: 1.8;
+  }
+  #retry-btn {
+    width: 100%;
+    padding: 2.4;
+    margin-top: 2.8;
+    background-color: #e8322e;
+    color: #fff4e0;
+    border-radius: 1.4;
+    font-size: 3.2;
+    font-weight: bold;
+    text-align: center;
+    letter-spacing: 0.6;
+    cursor: pointer;
+  }
+  .hint {
+    font-size: 1.7;
+    color: #6b625c;
+    text-align: center;
+    margin-top: 1.4;
+  }
+</style>
+<div class="panel">
+  <span id="end-title">OFF THE RIDE</span>
+  <span id="end-stats">TIER 1/3</span>
+  <button id="retry-btn">RIDE AGAIN</button>
+  <span class="hint">POINT &amp; CLICK - OR JUST PULL TRIGGER</span>
+</div>

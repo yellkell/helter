@@ -1,0 +1,28 @@
+{
+  "name": "helter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "HELTER SKELTER — ride a gigantic seaside helter skelter in VR, built with the Immersive Web SDK",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@iwsdk/core": "0.4.2",
+    "three": "npm:super-three@0.181.0"
+  },
+  "devDependencies": {
+    "@iwsdk/vite-plugin-dev": "0.4.2",
+    "@iwsdk/vite-plugin-uikitml": "0.4.2",
+    "@types/three": "*",
+    "typescript": "^5.5.0",
+    "vite": "^7.1.4",
+    "vite-plugin-mkcert": "^1.17.0"
+  },
+  "engines": {
+    "node": ">=20.19.0 <21.0.0-0 || >=22.12.0 <23.0.0-0 || >=24.0.0"
+  }
+}
