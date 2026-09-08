@@ -22,6 +22,7 @@ import {
   TOTAL_TIERS
 } from '../constants.js';
 import { emit, game, on, resetGameState } from '../state.js';
+import { CoinSystem } from './coins.js';
 import { EnvironmentSystem, type EnvHandles } from './environment.js';
 import { SlideSystem } from './slide.js';
 
@@ -58,6 +59,7 @@ export class GameSystem extends createSystem({
   private headLocal = new Vector3();
 
   private hudTier: UIKit.Text | null = null;
+  private hudCoins: UIKit.Text | null = null;
   private hudBig: UIKit.Text | null = null;
   private hudAlt: UIKit.Text | null = null;
   private hudStatus: UIKit.Text | null = null;
@@ -156,6 +158,7 @@ export class GameSystem extends createSystem({
       const doc = this.getDocument(entity);
       if (!doc) return;
       this.hudTier = doc.getElementById('tier-label') as UIKit.Text;
+      this.hudCoins = doc.getElementById('coin-label') as UIKit.Text;
       this.hudBig = doc.getElementById('big-label') as UIKit.Text;
       this.hudAlt = doc.getElementById('alt-label') as UIKit.Text;
       this.hudStatus = doc.getElementById('status-label') as UIKit.Text;
@@ -240,12 +243,23 @@ export class GameSystem extends createSystem({
     return this.visibilityState.value === VisibilityState.NonImmersive ? vr - 0.75 : vr;
   }
 
-  private setHud(key: 'tier' | 'big' | 'alt' | 'status', value: string): void {
+  /** Same idea for the HUD: above the eyeline in VR, top of the screen on desktop. */
+  private layoutHud(): void {
+    const hud = this.panels?.hud?.object3D;
+    if (!hud) return;
+    const desktop = this.visibilityState.value === VisibilityState.NonImmersive;
+    hud.position.set(0, desktop ? 0.95 : 2.45, -3.6);
+    hud.rotation.x = desktop ? -0.35 : 0.14;
+  }
+
+  private setHud(key: 'tier' | 'coins' | 'big' | 'alt' | 'status', value: string): void {
     if (this.hudCache[key] === value) return;
     this.hudCache[key] = value;
     const el =
       key === 'tier'
         ? this.hudTier
+        : key === 'coins'
+          ? this.hudCoins
         : key === 'big'
           ? this.hudBig
           : key === 'alt'
@@ -269,24 +283,31 @@ export class GameSystem extends createSystem({
     this.setStartPanelShown(false);
     audio.play('begin');
     window.setTimeout(() => audio.startMusic(), 400);
+    this.layoutHud();
     this.setPanelVisible(this.panels?.hud, true);
     this.setPointersVisible(false);
     emit('game-start');
-    const slide = this.world.getSystem(SlideSystem);
-    slide?.placeAtStart();
-    slide?.buildCourse();
+    this.buildCourse();
     this.enterLanding(LANDING_HOLD + 0.8);
+  }
+
+  /** Stand up the gates, then lay the coins through the gaps between them. */
+  private buildCourse(): void {
+    const slide = this.world.getSystem(SlideSystem);
+    if (!slide) return;
+    slide.placeAtStart();
+    slide.buildCourse();
+    this.world.getSystem(CoinSystem)?.build(slide.getGates());
   }
 
   private retry(): void {
     resetGameState();
     emit('game-reset');
     this.env?.confetti.stop();
-    const slide = this.world.getSystem(SlideSystem);
-    slide?.placeAtStart();
-    slide?.buildCourse();
+    this.buildCourse();
     this.setEndPanelShown(false);
     this.winWait = 0;
+    this.layoutHud();
     this.setPanelVisible(this.panels?.hud, true);
     this.setPointersVisible(false);
     this.hudCache = {};
@@ -335,7 +356,7 @@ export class GameSystem extends createSystem({
 
     this.endTitle?.setProperties({ text: 'YOU MADE IT!' });
     this.endStats?.setProperties({
-      text: `${TOTAL_DESCENT}M DOWN   -   ${this.formatTime(game.runTime)}`
+      text: `${TOTAL_DESCENT}M DOWN   -   ${this.formatTime(game.runTime)}   -   ${game.coins}/${game.coinsTotal} COINS`
     });
     this.setPanelVisible(this.panels?.hud, false);
     this.setPanelVisible(this.panels?.warn, false);
@@ -356,7 +377,7 @@ export class GameSystem extends createSystem({
     const altitude = Math.max(0, Math.round(this.player.position.y - GROUND_LANDING_Y));
     this.endTitle?.setProperties({ text: 'OFF THE RIDE' });
     this.endStats?.setProperties({
-      text: `TIER ${game.tier}/${TOTAL_TIERS}   -   ALT ${altitude}M   -   ${this.formatTime(game.runTime)}`
+      text: `TIER ${game.tier}/${TOTAL_TIERS}   -   ALT ${altitude}M   -   ${game.coins} COINS   -   ${this.formatTime(game.runTime)}`
     });
     this.setPanelVisible(this.panels?.hud, false);
     this.setPanelVisible(this.panels?.warn, false);
@@ -420,6 +441,7 @@ export class GameSystem extends createSystem({
     const alt = Math.max(0, Math.round(this.player.position.y - GROUND_LANDING_Y));
     this.setHud('alt', `ALT ${alt}M`);
     this.setHud('tier', game.tier >= TOTAL_TIERS ? 'FINAL TIER' : `TIER ${game.tier}/${TOTAL_TIERS}`);
+    this.setHud('coins', `COINS ${game.coins}`);
 
     if (game.phase === 'LANDING') {
       this.updateLanding(delta);

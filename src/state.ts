@@ -19,7 +19,10 @@ export const game = {
   /** Current slide speed in m/s, drives the wind streaks. */
   slideSpeed: 0,
   /** Distance ridden along the whole slide, in metres. */
-  distance: 0
+  distance: 0,
+  /** Coins (and gems, worth five) collected this run, and how many were on offer. */
+  coins: 0,
+  coinsTotal: 0
 };
 
 export type GameEvent =
@@ -50,4 +53,6 @@ export function resetGameState(): void {
   game.holdRemaining = 0;
   game.slideSpeed = 0;
   game.distance = 0;
+  game.coins = 0;
+  game.coinsTotal = 0;
 }

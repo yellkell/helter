@@ -20,6 +20,7 @@ export type SfxName = keyof typeof SFX;
 class AudioManager {
   private sfx = new Map<SfxName, HTMLAudioElement>();
   private music: HTMLAudioElement | null = null;
+  private ctx: AudioContext | null = null;
 
   init(): void {
     (Object.keys(SFX) as SfxName[]).forEach((name) => {
@@ -45,6 +46,40 @@ class AudioManager {
     el.currentTime = 0;
     el.volume = volume;
     void el.play().catch(() => {});
+  }
+
+  /**
+   * Coin ding: a short bright tone that climbs with the streak, Subway
+   * Surfers style. Gems get a two-note chime. Lazily creates the
+   * AudioContext (the first call always follows the BEGIN gesture).
+   */
+  coin(streak: number, gem = false): void {
+    try {
+      this.ctx ??= new AudioContext();
+      const t = this.ctx.currentTime;
+      const tone = (freq: number, at: number, dur: number, vol: number): void => {
+        const osc = this.ctx!.createOscillator();
+        const gain = this.ctx!.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(vol, at + 0.008);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+        osc.connect(gain);
+        gain.connect(this.ctx!.destination);
+        osc.start(at);
+        osc.stop(at + dur + 0.02);
+      };
+      if (gem) {
+        tone(1320, t, 0.12, 0.2);
+        tone(1980, t + 0.09, 0.22, 0.2);
+        return;
+      }
+      const step = Math.min(streak, 14);
+      tone(880 * Math.pow(2, step / 12), t, 0.11, 0.16);
+    } catch {
+      /* feedback audio is never worth crashing over */
+    }
   }
 
   startMusic(): void {

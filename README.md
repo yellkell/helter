@@ -14,9 +14,9 @@ breath before the next drop. Gates stand across the lanes on the way down;
 lean left or right with your real body to slip past them. Clip one and
 you're off the ride. Make it to the bottom and the fair is waiting.
 
-| The tower | Start | The gates |
+| The tower | Start | Coins and gates |
 | --- | --- | --- |
-| ![Tower](docs/screenshot-tower.png) | ![Start](docs/screenshot-start.png) | ![Gates](docs/screenshot-gates.png) |
+| ![Tower](docs/screenshot-tower.png) | ![Start](docs/screenshot-start.png) | ![Coins](docs/screenshot-coins.png) |
 
 ## How to play
 
@@ -27,6 +27,12 @@ you're off the ride. Make it to the bottom and the fair is waiting.
   space and stand at its centre — you dodge with your real body.
 - **On the slide**: lean left / centre / right to pass the gates. The rig
   turns with the spiral, so left and right always mean your left and right.
+- **Coins**: strings of spinning coins run through the gaps between the
+  gates, Subway Surfers style. Be in a coin's lane as you pass it and it's
+  yours; strings hop lanes mid-run, so the same lean that dodges a board
+  earns the points. One mint gem per tier, worth five, hides in a side
+  lane. The HUD keeps count and the end screen shows what you took of
+  what was on offer.
 - **Landings**: a 3-2-1 count on each bay, then the next tier launches.
 - **Desktop**: **A / D** or the **arrow keys** lean. **Enter** or **Space**
   starts and retries.
@@ -86,6 +92,12 @@ rig's floor on the slide bed and yawing the rig to face downhill. Gates are
 placed along the same path and tested in their own local frame, so the same
 lean-between-the-boards rule holds as the spiral turns. The wind streaks are
 DOWN's too, raked down the 26° pitch of the slide.
+
+The coins are new: laid after the gates so none sits inside a board, in
+strings of six to eleven, with a lane hop on the longer ones. A pickup is a
+sweep test — did the rig cross the coin's arc-length this frame while the
+head sat in its lane — so nothing is missed at speed, and a synthesised
+ding climbs a semitone per coin in a streak.
 
 Everything else is new and procedural: a Rayleigh-ish sky with drifting
 fbm clouds and a real sun, a heightfield coast with sand, downs, a chalk

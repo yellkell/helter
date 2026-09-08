@@ -27,6 +27,8 @@ export interface Gate {
   /** Arc-length position along the slide. */
   s: number;
   tier: number;
+  /** Lane index (0 outer .. 2 tower side) this board blocks. */
+  lane: number;
 }
 
 /**
@@ -41,6 +43,7 @@ export class SlideSystem extends createSystem({}) {
   private active = false;
   private tierIndex = 0;
   private s = 0;
+  private prevS = 0;
   private endS = 0;
   private speed = 0;
   private elapsed = 0;
@@ -66,9 +69,27 @@ export class SlideSystem extends createSystem({}) {
     return this.s;
   }
 
+  /** Where the rig was at the start of this frame — for sweep tests. */
+  get previousDistance(): number {
+    return this.prevS;
+  }
+
+  /**
+   * How far a world point sits across the slide from the rig's centreline,
+   * in metres: negative toward the outer lip, positive toward the tower.
+   * Lanes live at -0.5 / 0 / +0.5, same as DOWN.
+   */
+  lateralOf(world: Vector3): number {
+    return (
+      (world.x - this.sample.position.x) * this.sample.right.x +
+      (world.z - this.sample.position.z) * this.sample.right.z
+    );
+  }
+
   /** Put the rig at the very start of the slide, facing downhill. */
   placeAtStart(): void {
     this.s = 0;
+    this.prevS = 0;
     this.applyPose(0);
   }
 
@@ -94,7 +115,7 @@ export class SlideSystem extends createSystem({}) {
         const lanes = pattern[k % pattern.length];
         const color = GATE_COLORS[Math.floor(Math.random() * GATE_COLORS.length)];
         for (const lane of lanes) {
-          this.gates.push({ group: this.spawnGate(s, LANE_X[lane], color), s, tier: i });
+          this.gates.push({ group: this.spawnGate(s, LANE_X[lane], color), s, tier: i, lane });
         }
       }
     });
@@ -122,6 +143,7 @@ export class SlideSystem extends createSystem({}) {
     this.active = true;
     this.tierIndex = tierIndex;
     this.s = tier.s0;
+    this.prevS = tier.s0;
     this.endS = tier.s1;
     this.speed = 0;
     this.elapsed = 0;
@@ -145,6 +167,7 @@ export class SlideSystem extends createSystem({}) {
     this.speed = SLIDE_SPEED * launch * launch;
     game.slideSpeed = this.speed;
 
+    this.prevS = this.s;
     this.s += this.speed * delta;
     game.distance = this.s;
 

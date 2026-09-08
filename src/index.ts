@@ -19,6 +19,7 @@ import { createTerrain } from './env/terrain.js';
 import { createTower } from './env/tower.js';
 import { createSlideTrack, createStreaks } from './env/track.js';
 import { helterPath } from './ride/path.js';
+import { CoinSystem } from './systems/coins.js';
 import { EnvironmentSystem, type EnvHandles } from './systems/environment.js';
 import { GameSystem, type PanelEntities } from './systems/game.js';
 import { SlideSystem } from './systems/slide.js';
@@ -130,6 +131,7 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
   world
     .registerSystem(EnvironmentSystem)
     .registerSystem(SlideSystem)
+    .registerSystem(CoinSystem)
     .registerSystem(GameSystem);
 
   // Stand the rider on the balcony, facing down the slide, from the start.
