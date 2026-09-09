@@ -32,8 +32,17 @@ const COIN_STEP = 2.2;
 const COIN_HEIGHT = 1.35;
 /** How far across a lane you can be and still take the coin. */
 const CATCH_WIDTH = 0.4;
-/** A gate this close to a coin's position blocks that lane for coins. */
-const GATE_CLEARANCE = 3.2;
+/**
+ * Coins never lead you into a board. A string in a lane needs this much
+ * clear slide after the last gate in that lane before its first coin (time
+ * to get across), and this much before the next gate in that lane after
+ * its last coin (time to see the board and get out of the way — at 16 m/s,
+ * 12 m is three quarters of a second).
+ */
+const LEAD_IN = 7;
+const LEAD_OUT = 12;
+/** Strings shorter than this aren't worth laying. */
+const MIN_RUN = 3;
 const GEM_VALUE = 5;
 const MAX_COINS = 480;
 const MAX_GEMS = 12;
@@ -232,61 +241,94 @@ export class CoinSystem extends createSystem({}) {
    */
   build(gates: Gate[]): void {
     this.clear();
-    const laneFree = (s0: number, s1: number, lane: number): boolean =>
-      !gates.some(
-        (g) => g.lane === lane && g.s > s0 - GATE_CLEARANCE && g.s < s1 + GATE_CLEARANCE
-      );
     const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
+
+    /**
+     * How many coins a string starting at `s` in `lane` may run before it
+     * would lead the rider into a board in that lane: 0 if a board in the
+     * lane is too close behind for the rider to have got across yet.
+     */
+    const roomFor = (s: number, lane: number, limit: number): number => {
+      let next = Infinity;
+      for (const g of gates) {
+        if (g.lane !== lane) continue;
+        if (g.s > s - LEAD_IN && g.s <= s) return 0;
+        if (g.s > s && g.s < next) next = g.s;
+      }
+      const room = Math.min(next - LEAD_OUT, limit) - s;
+      return room < 0 ? 0 : Math.floor(room / COIN_STEP) + 1;
+    };
 
     helterPath.tiers.forEach((tier, tierIndex) => {
       let s = tier.helixS0 + 9;
       let gemPlaced = false;
       const end = tier.helixS1 - 14;
       while (s < end) {
-        const run = 6 + Math.floor(Math.random() * 6);
-        const length = (run - 1) * COIN_STEP;
-        if (s + length > end) break;
-
-        // Prefer a lane that's clear for the whole string; fall back to a
-        // string that hops lanes halfway when nothing is clear end to end.
+        const desired = 6 + Math.floor(Math.random() * 6);
         const lanes = [0, 1, 2].sort(() => Math.random() - 0.5);
-        let laneA = lanes.find((l) => laneFree(s, s + length, l));
-        let laneB = laneA;
-        if (laneA === undefined) {
-          const half = s + length / 2;
-          laneA = lanes.find((l) => laneFree(s, half, l));
-          laneB = lanes.find((l) => laneFree(half, s + length, l));
-        } else if (run >= 9 && Math.random() < 0.55) {
-          // A deliberate hop: reward the lean even when one lane would do.
-          const half = s + length / 2;
-          const other = lanes.find((l) => l !== laneA && laneFree(half, s + length, l));
-          if (other !== undefined) laneB = other;
+
+        // The lane with the most clear slide ahead takes the string; it
+        // runs as far as it may, up to the length we wanted.
+        let laneA = -1;
+        let roomA = 0;
+        for (const lane of lanes) {
+          const room = roomFor(s, lane, end);
+          if (room > roomA) {
+            laneA = lane;
+            roomA = room;
+          }
         }
-        if (laneA === undefined || laneB === undefined) {
-          s += 4;
+        if (roomA < MIN_RUN) {
+          s += 3;
           continue;
+        }
+        let run = Math.min(desired, roomA);
+        let laneB = laneA;
+        let hopAt = run;
+
+        // Hop lanes halfway — to finish a string this lane can't, or just to
+        // reward the lean — when the other lane is clear for the rest.
+        if (run < desired || (run >= 8 && Math.random() < 0.55)) {
+          const first = Math.min(run, Math.ceil(desired / 2));
+          const sB = s + first * COIN_STEP;
+          for (const lane of lanes) {
+            if (lane === laneA) continue;
+            const roomB = Math.min(roomFor(sB, lane, end), desired - first);
+            if (roomB >= MIN_RUN) {
+              laneB = lane;
+              hopAt = first;
+              run = first + roomB;
+              break;
+            }
+          }
         }
 
         // The gem: once per tier, at the head of a side-lane string, so it
         // costs a lean and a bit of nerve around the gates.
-        if (!gemPlaced && tierIndex <= 2 && laneA !== 1 && Math.random() < 0.5) {
+        if (
+          !gemPlaced &&
+          tierIndex <= 2 &&
+          laneA !== 1 &&
+          Math.random() < 0.5 &&
+          roomFor(s - COIN_STEP, laneA, end) > 0
+        ) {
           this.place(s - COIN_STEP, laneA, true);
           gemPlaced = true;
         }
 
         for (let i = 0; i < run; i++) {
-          const lane = i < run / 2 ? laneA : laneB;
+          const lane = i < hopAt ? laneA : laneB;
           if (this.coins.count >= MAX_COINS) break;
           this.place(s + i * COIN_STEP, lane, false);
         }
-        s += length + 5 + Math.random() * 9;
+        s += (run - 1) * COIN_STEP + 5 + Math.random() * 9;
       }
       if (!gemPlaced) {
         // Guarantee one gem per tier: drop it into any clear side lane.
         for (let tries = 0; tries < 20 && !gemPlaced; tries++) {
           const gs = tier.helixS0 + 12 + Math.random() * (end - tier.helixS0 - 24);
           const lane = pick([0, 2]);
-          if (laneFree(gs, gs, lane)) {
+          if (roomFor(gs, lane, end) > 0) {
             this.place(gs, lane, true);
             gemPlaced = true;
           }

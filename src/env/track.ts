@@ -37,12 +37,12 @@ import {
 } from '../constants.js';
 import { HelterPath, type PathSample } from '../ride/path.js';
 import {
+  getWoodTexture,
   LIGHT_GLSL,
   makeStripeTexture,
   makeTextTexture,
-  NOISE_TEX_GLSL,
-  noiseUniform,
-  toon
+  toon,
+  WOOD_TILE
 } from './fx.js';
 
 export interface TrackHandles {
@@ -95,10 +95,13 @@ function buildStrip(
   return geometry;
 }
 
-/** Painted slide bed: cream boards, red lane lines, gold arrows flowing downhill. */
+/** Varnished timber slide bed: boards, red lane lines, gold arrows flowing downhill. */
 function createBedMaterial(uTime: { value: number }): ShaderMaterial {
-  const uniforms = UniformsUtils.merge([UniformsLib.fog, { uTime, uWidth: { value: TRACK_WIDTH } }]);
-  uniforms.uNoise = noiseUniform();
+  const uniforms = UniformsUtils.merge([
+    UniformsLib.fog,
+    { uTime, uWidth: { value: TRACK_WIDTH }, uTile: { value: WOOD_TILE } }
+  ]);
+  uniforms.uWood = { value: getWoodTexture() };
   return new ShaderMaterial({
     fog: true,
     side: DoubleSide,
@@ -124,8 +127,9 @@ function createBedMaterial(uTime: { value: number }): ShaderMaterial {
       varying vec2 vUv;
       uniform float uTime;
       uniform float uWidth;
+      uniform float uTile;
+      uniform sampler2D uWood;
       #include <fog_pars_fragment>
-      ${NOISE_TEX_GLSL}
       ${LIGHT_GLSL}
 
       float lineAt(float x, float target, float width) {
@@ -138,16 +142,12 @@ function createBedMaterial(uTime: { value: number }): ShaderMaterial {
         float x = (vUv.x - 0.5) * uWidth; // metres across, - outer .. + tower
         float s = vUv.y;                  // metres along
 
-        vec3 cream = vec3(0.96, 0.88, 0.70);
         vec3 red = vec3(0.82, 0.10, 0.08);
         vec3 gold = vec3(0.95, 0.72, 0.16);
 
-        // Painted boards: faint plank seams every 0.4m along, wood grain.
-        vec3 albedo = cream;
-        float grain = fbmTex(vec2(x * 9.0, s * 0.9)) - 0.5;
-        albedo *= 1.0 + grain * 0.04;
-        float seam = 1.0 - lineAt(fract(s / 0.4) * 0.4, 0.2, 0.006) * 0.35;
-        albedo *= seam;
+        // Timber boards running down the slide (the texture tiles every
+        // uTile metres, six boards across the bed).
+        vec3 albedo = texture2D(uWood, vec2(vUv.x, s / uTile)).rgb;
         // Varnish darkens a touch toward the edges where feet don't polish it.
         albedo *= 1.0 - smoothstep(0.6, 1.2, abs(x)) * 0.12;
 
@@ -164,6 +164,10 @@ function createBedMaterial(uTime: { value: number }): ShaderMaterial {
         vec3 n = normalize(vNormal);
         if (!gl_FrontFacing) n = -n;
         vec3 col = shade(albedo, n);
+        // Varnish: a soft sun highlight that slides over the boards with the view.
+        vec3 v = normalize(cameraPosition - vWorld);
+        vec3 h = normalize(SUN_DIR + v);
+        col += vec3(1.0, 0.95, 0.85) * pow(max(dot(n, h), 0.0), 28.0) * 0.3;
         gl_FragColor = vec4(col, 1.0);
         #include <fog_fragment>
         #include <tonemapping_fragment>
@@ -234,11 +238,13 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
     )
   );
 
-  // Underside + outer skirt so the slide has thickness from below.
+  // Underside + outer skirt so the slide has thickness from below. Deep
+  // enough to swallow the bracket ends, which used to show as black stubs.
+  const UNDER = 0.42;
   const underMaterial = toon({ color: 0x8a3128, side: DoubleSide });
   group.add(
-    new Mesh(buildStrip(samples, distances, at(-half, -0.16), at(half, -0.16), downNormal), underMaterial),
-    new Mesh(buildStrip(samples, distances, at(-half, -0.16), at(-half, 0.0), outwardNormal), underMaterial)
+    new Mesh(buildStrip(samples, distances, at(-half, -UNDER), at(half, -UNDER), downNormal), underMaterial),
+    new Mesh(buildStrip(samples, distances, at(-half, -UNDER), at(-half, 0.0), outwardNormal), underMaterial)
   );
 
   // Gold handrails riding the lip tops.
@@ -255,8 +261,11 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   // Ink rail posts up the outer lip, and pennant bunting slung from the rail
   // — the whole spiral dressed like the front of a pier.
   const postSamples = samples.filter((_, i) => i % 8 === 0);
+  // The posts stop under the cap board; they used to run on up through it
+  // and stand proud of the rail.
+  const POST_H = OUTER_LIP - 0.02;
   const posts = new InstancedMesh(
-    new CylinderGeometry(0.045, 0.045, OUTER_LIP + 0.1, 6),
+    new CylinderGeometry(0.045, 0.045, POST_H, 6),
     inkMaterial,
     postSamples.length
   );
@@ -265,13 +274,19 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   const pm = new Matrix4();
   const pq = new Quaternion();
   const pqFlag = new Quaternion();
+  const pqPitch = new Quaternion();
   const pp = new Vector3();
   const pOne = new Vector3(1, 1, 1);
   const pColor = new Color();
   const yAxisP = new Vector3(0, 1, 0);
+  const xAxisP = new Vector3(1, 0, 0);
+  // On the spiral the rail drops at the slide's pitch; the pennants tilt
+  // with it so their top edges follow the string instead of floating level
+  // across a rail that is falling away beneath them.
+  pqPitch.setFromAxisAngle(xAxisP, -SLIDE_PITCH);
   postSamples.forEach((s, i) => {
     pq.setFromAxisAngle(yAxisP, s.yaw);
-    at(-half + 0.08, OUTER_LIP / 2 + 0.02)(s, pp);
+    at(-half + 0.08, POST_H / 2)(s, pp);
     pm.compose(pp, pq, pOne);
     posts.setMatrixAt(i, pm);
     // Two pennants between each pair of posts, hung just under the rail.
@@ -279,7 +294,9 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
     for (let k = 0; k < 2; k++) {
       const idx = Math.min(samples.length - 1, i * 8 + 3 + k * 3);
       const fs = samples[idx];
-      pq.setFromAxisAngle(yAxisP, fs.yaw).multiply(pqFlag);
+      pq.setFromAxisAngle(yAxisP, fs.yaw);
+      if (!fs.flat) pq.multiply(pqPitch);
+      pq.multiply(pqFlag);
       at(-half + 0.1, OUTER_LIP + 0.02)(fs, pp);
       pm.compose(pp, pq, pOne);
       bunting.setMatrixAt(i * 2 + k, pm);
@@ -303,16 +320,21 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   const wallX = half + 0.4; // the tower wall in rig-space x
   helixSamples.forEach((s, i) => {
     q.setFromAxisAngle(yAxis, s.yaw);
-    // Horizontal beam under the bed, outer edge to the wall.
-    at((-half - 0.25 + wallX) / 2, -0.3)(s, pos);
-    scale.set(TRACK_WIDTH + 0.65, 0.16, 0.16);
+    // Horizontal beam under the bed, from just inside the outer skirt to
+    // the wall. (It used to overshoot the skirt by 15 cm — black stubs
+    // poking out of the side of every tier below you.)
+    const beamOuter = -half + 0.06;
+    at((beamOuter + wallX) / 2, -0.3)(s, pos);
+    scale.set(wallX - beamOuter, 0.16, 0.16);
     m.compose(pos, q, scale);
     brackets.setMatrixAt(i * 2, m);
-    // Diagonal brace from the outer edge down to the wall.
-    const run = wallX + half;
+    // Knee brace: from under the outer edge down to the wall. (It was built
+    // the other way up, its low end hanging 2.7 m below the outer edge —
+    // the black poles sticking out of the side of every tier.)
+    const run = wallX - beamOuter;
     const drop = 2.4;
-    at(0.2, -0.3 - drop / 2)(s, pos);
-    qRoll.setFromAxisAngle(zAxis, Math.atan2(drop, run));
+    at((beamOuter + wallX) / 2, -0.3 - drop / 2)(s, pos);
+    qRoll.setFromAxisAngle(zAxis, -Math.atan2(drop, run));
     scale.set(Math.hypot(run, drop), 0.12, 0.12);
     m.compose(pos, q.clone().multiply(qRoll), scale);
     brackets.setMatrixAt(i * 2 + 1, m);

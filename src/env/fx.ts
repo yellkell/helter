@@ -169,6 +169,32 @@ const NOISE_CELLS = 8;
 
 let noiseTexture: DataTexture | null = null;
 
+function latticeHash(ix: number, iy: number, seed: number): number {
+  const s = Math.sin(ix * 127.1 + iy * 311.7 + seed * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+/** Value noise on a lattice of `cells` per unit of (u, v), wrapped so it tiles. */
+function tileNoise(u: number, v: number, cells: number, seed: number): number {
+  const x = u * cells;
+  const y = v * cells;
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  let fx = x - ix;
+  let fy = y - iy;
+  fx = fx * fx * (3 - 2 * fx);
+  fy = fy * fy * (3 - 2 * fy);
+  const x0 = ((ix % cells) + cells) % cells;
+  const y0 = ((iy % cells) + cells) % cells;
+  const x1 = (x0 + 1) % cells;
+  const y1 = (y0 + 1) % cells;
+  const a = latticeHash(x0, y0, seed);
+  const b = latticeHash(x1, y0, seed);
+  const c = latticeHash(x0, y1, seed);
+  const d = latticeHash(x1, y1, seed);
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+
 /**
  * 256² RGBA noise that tiles seamlessly:
  * R, G — two independent four-octave fbms (mean ≈ 0.47, the same
@@ -179,36 +205,12 @@ export function getNoiseTexture(): DataTexture {
   if (noiseTexture) return noiseTexture;
   const size = NOISE_SIZE;
   const data = new Uint8Array(size * size * 4);
-  const hash = (ix: number, iy: number, seed: number): number => {
-    const s = Math.sin(ix * 127.1 + iy * 311.7 + seed * 74.7) * 43758.5453;
-    return s - Math.floor(s);
-  };
-  // Value noise on a lattice of `cells` per tile, wrapped so it tiles.
-  const vnoise = (u: number, v: number, cells: number, seed: number): number => {
-    const x = u * cells;
-    const y = v * cells;
-    const ix = Math.floor(x);
-    const iy = Math.floor(y);
-    let fx = x - ix;
-    let fy = y - iy;
-    fx = fx * fx * (3 - 2 * fx);
-    fy = fy * fy * (3 - 2 * fy);
-    const x0 = ix % cells;
-    const y0 = iy % cells;
-    const x1 = (ix + 1) % cells;
-    const y1 = (iy + 1) % cells;
-    const a = hash(x0, y0, seed);
-    const b = hash(x1, y0, seed);
-    const c = hash(x0, y1, seed);
-    const d = hash(x1, y1, seed);
-    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
-  };
   const fbm = (u: number, v: number, seed: number): number => {
     let value = 0;
     let amp = 0.5;
     let cells = FBM_CELLS;
     for (let o = 0; o < 4; o++) {
-      value += amp * vnoise(u, v, cells, seed + o * 13);
+      value += amp * tileNoise(u, v, cells, seed + o * 13);
       cells *= 2;
       amp *= 0.5;
     }
@@ -221,8 +223,8 @@ export function getNoiseTexture(): DataTexture {
       const o = (y * size + x) * 4;
       data[o] = Math.round(fbm(u, v, 1) * 255);
       data[o + 1] = Math.round(fbm(u, v, 101) * 255);
-      data[o + 2] = Math.round(vnoise(u, v, NOISE_CELLS, 7) * 255);
-      data[o + 3] = Math.round(vnoise(u, v, NOISE_CELLS, 57) * 255);
+      data[o + 2] = Math.round(tileNoise(u, v, NOISE_CELLS, 7) * 255);
+      data[o + 3] = Math.round(tileNoise(u, v, NOISE_CELLS, 57) * 255);
     }
   }
   noiseTexture = new DataTexture(data, size, size, RGBAFormat);
@@ -233,6 +235,83 @@ export function getNoiseTexture(): DataTexture {
   noiseTexture.generateMipmaps = true;
   noiseTexture.needsUpdate = true;
   return noiseTexture;
+}
+
+let woodTexture: CanvasTexture | null = null;
+
+/** Metres of slide one repeat of the wood texture covers, across and along. */
+export const WOOD_TILE = 2.4;
+
+/**
+ * Varnished timber for the slide bed and the landing bays: six boards
+ * across the tile, staggered end joints, a slow grain running along the
+ * boards, a knot or two, dark seams. Tiles seamlessly; 2.4 m square.
+ */
+export function getWoodTexture(): CanvasTexture {
+  if (woodTexture) return woodTexture;
+  const size = 512;
+  const planks = 6;
+  const plankW = size / planks;
+  const rnd = mulberry32(31);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const image = ctx.createImageData(size, size);
+  const px = image.data;
+
+  // Per-board tone and where along the tile its end joint falls.
+  const tones: number[] = [];
+  const joints: number[] = [];
+  for (let c = 0; c < planks; c++) {
+    tones.push(0.9 + rnd() * 0.2);
+    joints.push(Math.floor(rnd() * size));
+  }
+  const knots = [
+    { x: rnd() * size, y: rnd() * size, r: 5 + rnd() * 6 },
+    { x: rnd() * size, y: rnd() * size, r: 4 + rnd() * 5 }
+  ];
+  const base = [226, 178, 118]; // honey pine, sRGB
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const c = Math.floor(x / plankW);
+      // The board past the joint is a different board: its own tone.
+      const beyond = ((y - joints[c] + size) % size) < size / 2 ? 0 : 1;
+      let tone = tones[(c + beyond * 3) % planks];
+      // Grain: long lines along the board, wobbling slowly, plus broad
+      // colour drift so no two patches match.
+      const u = x / size;
+      const v = y / size;
+      const wobble = tileNoise(u, v, 3, 5 + c) * 9.0 + tileNoise(u, v, 12, 9) * 2.0;
+      const line = 0.5 + 0.5 * Math.sin(x * 0.55 + wobble + c * 17);
+      tone *= 1 - 0.16 * Math.pow(line, 5);
+      tone *= 1 + (tileNoise(u, v, 4, 21) - 0.5) * 0.22;
+      // Knots: dark rings.
+      for (const k of knots) {
+        const d = Math.hypot((x - k.x) * 1.6, y - k.y);
+        if (d < k.r * 2.2) tone *= 0.72 + 0.28 * (0.5 + 0.5 * Math.cos(d * 1.4));
+      }
+      // Seams between boards and at the end joints.
+      const seamX = Math.min(x % plankW, plankW - (x % plankW));
+      if (seamX < 1.5) tone *= 0.55;
+      else if (seamX < 3) tone *= 0.8;
+      const seamY = Math.min((y - joints[c] + size) % size, (joints[c] - y + size) % size);
+      if (seamY < 1.5) tone *= 0.6;
+      const o = (y * size + x) * 4;
+      px[o] = Math.min(255, base[0] * tone);
+      px[o + 1] = Math.min(255, base[1] * tone);
+      px[o + 2] = Math.min(255, base[2] * tone);
+      px[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  woodTexture = new CanvasTexture(canvas);
+  woodTexture.wrapS = RepeatWrapping;
+  woodTexture.wrapT = RepeatWrapping;
+  woodTexture.colorSpace = SRGBColorSpace;
+  woodTexture.anisotropy = 8;
+  return woodTexture;
 }
 
 /** The `uNoise` uniform. Add it after `UniformsUtils.merge`, which would clone the texture. */

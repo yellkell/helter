@@ -1,7 +1,9 @@
 import {
   BoxGeometry,
+  BufferGeometry,
   ConeGeometry,
   DoubleSide,
+  Float32BufferAttribute,
   Group,
   Mesh,
   PlaneGeometry,
@@ -46,6 +48,37 @@ const WAVE_GLSL = /* glsl */ `
     return g;
   }
 `;
+
+/** Height of the water surface (metres); the land's zero is dry. */
+export const SEA_LEVEL = -0.5;
+
+/**
+ * A flat square of side 2·`half` in the XZ plane, normals up, with a
+ * rectangular hole [x0, x1] × [z0, z1] cut out of it: eight triangles.
+ */
+function makeFrame(half: number, x0: number, x1: number, z0: number, z1: number): BufferGeometry {
+  const corners = [
+    [-half, -half], [half, -half], [half, half], [-half, half], // outer 0..3
+    [x0, z0], [x1, z0], [x1, z1], [x0, z1] // inner 4..7
+  ];
+  const positions: number[] = [];
+  const normals: number[] = [];
+  corners.forEach(([x, z]) => {
+    positions.push(x, 0, z);
+    normals.push(0, 1, 0);
+  });
+  const indices: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4;
+    // Wound so the faces look up (+Y): clockwise as seen from above in XZ.
+    indices.push(i, i + 4, j, j, i + 4, j + 4);
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  return geometry;
+}
 
 /** JS twin of `waveHeight` — the boats ride the same swell as the shader. */
 function waveHeightAt(x: number, z: number, t: number): number {
@@ -194,22 +227,32 @@ export function createSea(): SeaHandles {
     });
   };
 
-  // Far ocean: one flat plane out to the horizon (distant water reads flat).
-  const far = new Mesh(new PlaneGeometry(9000, 9000, 1, 1), makeWaterMaterial(false, 4500));
-  far.rotation.x = -Math.PI / 2;
-  group.add(far);
+  // The whole sea sits half a metre below the land's zero. The plaza and
+  // the meadow floor are flattened to exactly 0, and water at 0 under them
+  // fought the ground for the depth buffer — a flicker straight down from
+  // the balcony. Nothing on the beach reads the difference.
+  group.position.y = SEA_LEVEL;
 
   // Near water: the stretch you actually look down on, subdivided enough to
-  // show a real moving swell. Sits a hair above the far plane to avoid
-  // z-fighting where they overlap.
+  // show a real moving swell.
   const NEAR_SPAN = 3000;
-  const near = new Mesh(
-    new PlaneGeometry(NEAR_SPAN, NEAR_SPAN, 300, 300),
-    makeWaterMaterial(true, NEAR_SPAN / 2)
-  );
+  const NEAR_Z = 900;
+  const nearMaterial = makeWaterMaterial(true, NEAR_SPAN / 2);
+  // Where the shore shelves under it the water is nearly coplanar with the
+  // sand; nudging the water toward the camera in depth settles which one
+  // wins, so the waterline no longer shimmers from up the tower.
+  nearMaterial.polygonOffset = true;
+  nearMaterial.polygonOffsetFactor = -1;
+  nearMaterial.polygonOffsetUnits = -2;
+  const near = new Mesh(new PlaneGeometry(NEAR_SPAN, NEAR_SPAN, 300, 300), nearMaterial);
   near.rotation.x = -Math.PI / 2;
-  near.position.set(0, 0.02, 900);
+  near.position.set(0, 0, NEAR_Z);
   group.add(near);
+
+  // Far ocean: a flat frame around the near water out to the horizon
+  // (distant water reads flat). It used to be a full plane under the near
+  // one, a hair lower, and the two fought wherever they overlapped.
+  group.add(new Mesh(makeFrame(4500, -NEAR_SPAN / 2, NEAR_SPAN / 2, NEAR_Z - NEAR_SPAN / 2, NEAR_Z + NEAR_SPAN / 2), makeWaterMaterial(false, 4500)));
 
   // A few sailing boats out on the water.
   const boats: Group[] = [];

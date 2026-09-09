@@ -31,6 +31,9 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
     offer: 'always'
   },
   render: {
+    // A 0.3 m near plane (not 0.1) triples depth precision at range: from
+    // 300 m up, the beach and the sea a hair apart used to fight and flicker.
+    near: 0.3,
     far: 9000,
     defaultLighting: false,
     // Desktop rider's eye: standing on the slide, looking down it.

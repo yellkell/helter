@@ -30,7 +30,16 @@ import {
   TRACK_WIDTH
 } from '../constants.js';
 import { helterPath } from '../ride/path.js';
-import { addOutline, LIGHT_GLSL, makeGlow, NOISE_TEX_GLSL, noiseUniform, toon } from './fx.js';
+import {
+  addOutline,
+  getWoodTexture,
+  LIGHT_GLSL,
+  makeGlow,
+  NOISE_TEX_GLSL,
+  noiseUniform,
+  toon,
+  WOOD_TILE
+} from './fx.js';
 
 export interface TowerHandles {
   group: Group;
@@ -114,25 +123,32 @@ export function createStripeMaterial(opts: {
   });
 }
 
-/** A flat annulus sector in the XZ plane (normals up) between two angles. */
+/**
+ * A flat annulus sector in the XZ plane (normals up) between two angles.
+ * With `tile` set, UVs are in repeats of that many metres (across the ring
+ * and along its middle) so a tiling texture keeps its real-world size.
+ */
 export function annulusSector(
   rIn: number,
   rOut: number,
   a0: number,
   a1: number,
-  segments = 48
+  segments = 48,
+  tile?: number
 ): BufferGeometry {
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
+  const repeatU = tile ? (rOut - rIn) / tile : 1;
+  const repeatV = tile ? (Math.abs(a1 - a0) * (rIn + rOut)) / 2 / tile : 1;
   for (let i = 0; i <= segments; i++) {
     const a = a0 + ((a1 - a0) * i) / segments;
     const c = Math.cos(a);
     const s = Math.sin(a);
     positions.push(c * rIn, 0, s * rIn, c * rOut, 0, s * rOut);
     normals.push(0, 1, 0, 0, 1, 0);
-    uvs.push(0, i / segments, 1, i / segments);
+    uvs.push(0, (i / segments) * repeatV, repeatU, (i / segments) * repeatV);
     if (i < segments) {
       const k = i * 2;
       indices.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
@@ -271,9 +287,11 @@ export function createTower(): TowerHandles {
   const balconyOuter = SLIDE_RADIUS + TRACK_WIDTH / 2 + 1.1;
   const balconyA0 = helixStartAngle - 4.1;
   const balconyA1 = helixStartAngle + 0.02;
+  // Boarded like the slide bed: the same timber, laid across the walkway.
+  const deckMat = toon({ map: getWoodTexture(), side: DoubleSide });
   const balcony = new Mesh(
-    annulusSector(balconyInner, balconyOuter, balconyA0, balconyA1, 72),
-    toon({ color: 0xead9bd, side: DoubleSide })
+    annulusSector(balconyInner, balconyOuter, balconyA0, balconyA1, 72, WOOD_TILE),
+    deckMat
   );
   balcony.position.y = TIER_HEIGHTS[0] - 0.04;
   group.add(balcony);
@@ -335,7 +353,6 @@ export function createTower(): TowerHandles {
 
   // Landing bays: a broader shelf under each tier change so the stop reads
   // as arriving somewhere, not just pausing mid-slide.
-  const bayMat = toon({ color: 0xead9bd, side: DoubleSide });
   const bayTrim = toon({ color: PAINT.red, side: DoubleSide });
   helterPath.tiers.forEach((_tier, i) => {
     if (i === 0) return; // the balcony is tier one's bay
@@ -343,7 +360,7 @@ export function createTower(): TowerHandles {
     const a0 = seg.angle0 - 3.2 / SLIDE_RADIUS; // includes the arrival strip behind it
     const a1 = seg.angle0 + seg.length / SLIDE_RADIUS + 0.02;
     const outer = SLIDE_RADIUS + TRACK_WIDTH / 2 + 0.9;
-    const bay = new Mesh(annulusSector(TOWER_RADIUS - 0.3, outer, a0, a1, 24), bayMat);
+    const bay = new Mesh(annulusSector(TOWER_RADIUS - 0.3, outer, a0, a1, 24, WOOD_TILE), deckMat);
     bay.position.y = seg.y0 - 0.06;
     group.add(bay);
     const trim = new Mesh(annulusSector(outer - 0.3, outer, a0, a1, 24), bayTrim);
