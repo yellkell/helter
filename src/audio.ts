@@ -30,12 +30,28 @@ const SFX = {
 export type SfxName = keyof typeof SFX;
 
 export type MusicId =
+  | 'clovers'
+  | 'new-song-98'
+  | 'new-song-129'
   | 'original'
   | 'final'
   | 'chase'
   | 'sakupened'
   | 'fusion'
   | 'give-it-to-me';
+
+/** What plays at the top of the tower: the lobby and the balcony countdown. */
+export const LOBBY_TRACK: MusicId = 'clovers';
+
+/** The descent's own songs — one is drawn at random for each ride. */
+export const DESCENT_TRACKS: readonly MusicId[] = ['new-song-98', 'new-song-129'];
+
+/** A random descent song — a different one from `except` when there is a choice. */
+export function randomDescentTrack(except?: MusicId): MusicId {
+  const pool = DESCENT_TRACKS.filter((id) => id !== except);
+  const from = pool.length > 0 ? pool : DESCENT_TRACKS;
+  return from[Math.floor(Math.random() * from.length)];
+}
 
 export interface MusicTrack {
   id: MusicId;
@@ -44,15 +60,19 @@ export interface MusicTrack {
   /** Vorbis stand-in for browsers without AAC (open-codec Chromium builds). */
   fallback?: string;
   /**
-   * Playback level. The original and the M4A-sourced bonus tracks sit
-   * around -15 dB mean; Sakupened, Future Vibe and Final were supplied as
-   * hotter masters (~-9 dB mean, peaking at 0), so they play quieter to
-   * land at the same loudness in the headset.
+   * Playback level. The original, 4 Leaf Clovers, New Song 129 and the
+   * M4A-sourced bonus tracks sit around -15 dB mean; Sakupened, Future
+   * Vibe, Final and New Song 98 were supplied as hotter masters (~-9 dB
+   * mean, peaking at 0), so they play quieter to land at the same loudness
+   * in the headset.
    */
   volume: number;
 }
 
 export const MUSIC_TRACKS: readonly MusicTrack[] = [
+  { id: 'clovers', label: '4 LEAF CLOVERS', src: './audio/four-leaf-clovers.mp3', volume: 0.45 },
+  { id: 'new-song-98', label: 'NEW SONG 98', src: './audio/new-song-98.mp3', volume: 0.25 },
+  { id: 'new-song-129', label: 'NEW SONG 129', src: './audio/new-song-129.mp3', volume: 0.5 },
   {
     id: 'original',
     label: 'ORIGINAL',
@@ -83,6 +103,8 @@ class AudioManager {
   private live = new Set<AudioBufferSourceNode>();
   private music: HTMLAudioElement | null = null;
   private musicId: MusicId = 'original';
+  /** The top-of-the-tower song, on its own player so the descent can take over cleanly. */
+  private lobby: HTMLAudioElement | null = null;
   private canPlayAac = false;
 
   init(): void {
@@ -107,6 +129,7 @@ class AudioManager {
   selectMusic(id: MusicId): void {
     const track = MUSIC_TRACKS.find((candidate) => candidate.id === id);
     if (!track) return;
+    if (this.music && this.musicId === id) return; // already loaded (and maybe playing)
     this.music?.pause();
     this.musicId = id;
     const src = track.fallback && !this.canPlayAac ? track.fallback : track.src;
@@ -114,6 +137,32 @@ class AudioManager {
     this.music.preload = 'auto';
     this.music.loop = true;
     this.music.volume = track.volume;
+  }
+
+  /** The descent track currently loaded. */
+  get selectedMusic(): MusicId {
+    return this.musicId;
+  }
+
+  /** 4 Leaf Clovers at the top: keeps looping until the first drop. No-op if already playing. */
+  playLobby(): void {
+    if (!this.lobby) {
+      const track = MUSIC_TRACKS.find((candidate) => candidate.id === LOBBY_TRACK)!;
+      this.lobby = new Audio(track.src);
+      this.lobby.preload = 'auto';
+      this.lobby.loop = true;
+      this.lobby.volume = track.volume;
+    }
+    if (!this.lobby.paused) return;
+    void this.lobby.play().catch(() => {});
+  }
+
+  stopLobby(): void {
+    this.lobby?.pause();
+  }
+
+  get lobbyPlaying(): boolean {
+    return Boolean(this.lobby && !this.lobby.paused);
   }
 
   /** Call from any real DOM gesture (the intro buttons) so the context is
@@ -202,8 +251,14 @@ class AudioManager {
     this.music?.pause();
   }
 
-  /** Silence the previous run before replaying its opening cue. */
+  /** Silence everything: both music players and any playing stinger. */
   stopAll(): void {
+    this.lobby?.pause();
+    this.stopRun();
+  }
+
+  /** Silence the previous run — its song and any stinger — leaving the balcony song alone. */
+  stopRun(): void {
     this.music?.pause();
     this.live.forEach((source) => {
       try {

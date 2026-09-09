@@ -72,8 +72,8 @@
   }
   .song-option {
     width: 100%;
-    padding: 1.05;
-    margin-top: 0.25;
+    padding: 0.85;
+    margin-top: 0.2;
     background-color: #fff4e0;
     color: #1a1614;
     border-color: #e8c9a0;
@@ -116,8 +116,12 @@
   <span class="safety">LEAN LEFT / RIGHT TO PASS THE GATES</span>
   <div id="song-selector">
     <span class="song-label">CHOOSE YOUR TRACK</span>
-    <button id="song-toggle">ORIGINAL</button>
+    <button id="song-toggle">SHUFFLE</button>
     <div id="song-options">
+      <button id="song-shuffle" class="song-option">SHUFFLE</button>
+      <button id="song-clovers" class="song-option">4 LEAF CLOVERS</button>
+      <button id="song-new-song-98" class="song-option">NEW SONG 98</button>
+      <button id="song-new-song-129" class="song-option">NEW SONG 129</button>
       <button id="song-original" class="song-option">ORIGINAL</button>
       <button id="song-final" class="song-option">FINAL</button>
       <button id="song-chase" class="song-option">CHASE</button>

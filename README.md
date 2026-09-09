@@ -35,9 +35,13 @@ you're off the ride. Make it to the bottom and the fair is waiting.
   what was on offer.
 - **Landings**: DOWN's voiced 3-2-1 count on each bay, then the next tier
   launches.
-- **Soundtrack**: reach the bottom once and the lobby gains a track picker
-  (DOWN's five, plus **Final**). Your pick is remembered; after a finished
-  ride the end screen takes you **back to the top** so you can change it.
+- **Soundtrack**: **4 Leaf Clovers** plays at the top — the lobby and the
+  balcony countdown — and the first drop hands over to one of the ride's
+  own songs (**New Song 98** or **New Song 129**, drawn at random each
+  ride). Reach the bottom once and the lobby gains a track picker with all
+  of them plus DOWN's five and **Final**; **Shuffle** is the default. Your
+  pick is remembered; after a finished ride the end screen takes you
+  **back to the top** so you can change it.
 - **Desktop**: **A / D** or the **arrow keys** lean. **Enter** or **Space**
   starts and retries. **Up / Down** pick the track in the lobby.
 

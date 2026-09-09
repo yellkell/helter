@@ -12,9 +12,11 @@ import {
 } from '@iwsdk/core';
 
 import {
+  LOBBY_TRACK,
   MUSIC_TRACKS,
   audio,
   isMusicId,
+  randomDescentTrack,
   type MusicId
 } from '../audio.js';
 import {
@@ -46,12 +48,15 @@ const HUD_REFRESH = 0.1;
 const SONGS_UNLOCKED_KEY = 'helter.songs-unlocked.v1';
 const SELECTED_SONG_KEY = 'helter.selected-song.v1';
 
-function readStoredSong(): MusicId {
+/** A track from the picker, or the default: a random descent song each ride. */
+type SongChoice = MusicId | 'shuffle';
+
+function readStoredSong(): SongChoice {
   try {
     const stored = window.localStorage.getItem(SELECTED_SONG_KEY);
-    return isMusicId(stored) ? stored : 'original';
+    return isMusicId(stored) ? stored : 'shuffle';
   } catch {
-    return 'original';
+    return 'shuffle';
   }
 }
 
@@ -145,7 +150,7 @@ export class GameSystem extends createSystem({
   }
 
   init(): void {
-    audio.selectMusic(this.selectedSong);
+    this.loadDescentTrack();
     this.wireStartPanel();
     this.wireHudPanel();
     this.wireEndPanel();
@@ -160,7 +165,7 @@ export class GameSystem extends createSystem({
     window.addEventListener('keydown', (e) => {
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && game.phase === 'START' && this.lobbyActive) {
         if (!this.songsUnlocked) return;
-        const ids = MUSIC_TRACKS.map((track) => track.id);
+        const ids: SongChoice[] = ['shuffle', ...MUSIC_TRACKS.map((track) => track.id)];
         const step = e.key === 'ArrowDown' ? 1 : ids.length - 1;
         const next = ids[(ids.indexOf(this.selectedSong) + step) % ids.length];
         audio.blip(1000);
@@ -195,6 +200,7 @@ export class GameSystem extends createSystem({
     this.lobbyArm = 0;
     this.setStartPanelShown(true);
     this.setPointersVisible(true);
+    audio.playLobby(); // 4 Leaf Clovers, up on the balcony
   }
 
   /**
@@ -232,10 +238,15 @@ export class GameSystem extends createSystem({
         this.songMenuOpen = !this.songMenuOpen;
         this.applySongMenu();
       });
+      const shuffle = doc.getElementById('song-shuffle') as UIKit.Text | null;
+      shuffle?.addEventListener('click', () => {
+        audio.blip(860);
+        this.selectSong('shuffle');
+      });
       MUSIC_TRACKS.forEach((track, index) => {
         const option = doc.getElementById(`song-${track.id}`) as UIKit.Text | null;
         option?.addEventListener('click', () => {
-          audio.blip(900 + index * 90);
+          audio.blip(900 + index * 60);
           this.selectSong(track.id);
         });
       });
@@ -243,19 +254,26 @@ export class GameSystem extends createSystem({
     });
   }
 
-  private selectSong(id: MusicId): void {
+  private selectSong(id: SongChoice): void {
     this.selectedSong = id;
     this.songMenuOpen = false;
     storeValue(SELECTED_SONG_KEY, id);
-    audio.selectMusic(id);
+    this.loadDescentTrack();
     this.applySongMenu();
+  }
+
+  /** Get the descent's song loading: the pick, or a fresh random draw. */
+  private loadDescentTrack(): void {
+    audio.selectMusic(
+      this.selectedSong === 'shuffle' ? randomDescentTrack(audio.selectedMusic) : this.selectedSong
+    );
   }
 
   private applySongMenu(): void {
     this.songSelector?.setProperties({ display: this.songsUnlocked ? 'flex' : 'none' });
     this.songOptions?.setProperties({ display: this.songMenuOpen ? 'flex' : 'none' });
     const track = MUSIC_TRACKS.find((candidate) => candidate.id === this.selectedSong);
-    this.songToggle?.setProperties({ text: track?.label ?? 'ORIGINAL' });
+    this.songToggle?.setProperties({ text: track?.label ?? 'SHUFFLE' });
   }
 
   private wireHudPanel(): void {
@@ -428,15 +446,38 @@ export class GameSystem extends createSystem({
 
   // -- Phase transitions ----------------------------------------------------
 
+  /**
+   * The countdown at the top of the tower. The descent's song stops (a
+   * retry) and 4 Leaf Clovers plays, or keeps playing, on the balcony; the
+   * ride's own song is loaded now so it starts clean at the first drop.
+   */
   private startRunAudio(): void {
     if (this.musicStartTimer !== null) window.clearTimeout(this.musicStartTimer);
-    audio.stopAll();
+    audio.stopRun();
     audio.play('begin', 0.82);
+    this.loadDescentTrack();
     // begin.ogg is 560 ms. Give the full line clear air before the music enters.
     this.musicStartTimer = window.setTimeout(() => {
-      audio.startMusic();
+      audio.playLobby();
       this.musicStartTimer = null;
     }, 850);
+  }
+
+  /**
+   * The first drop: the balcony song hands over to the descent's. When the
+   * pick is the balcony song itself it just carries on.
+   */
+  private startDescentMusic(): void {
+    if (this.musicStartTimer !== null) {
+      window.clearTimeout(this.musicStartTimer);
+      this.musicStartTimer = null;
+    }
+    if (audio.selectedMusic === LOBBY_TRACK) {
+      audio.playLobby();
+      return;
+    }
+    audio.stopLobby();
+    audio.startMusic();
   }
 
   private startGame(): void {
@@ -520,6 +561,7 @@ export class GameSystem extends createSystem({
     const slide = this.world.getSystem(SlideSystem);
     if (!slide) return;
     slide.begin(game.tier - 1);
+    if (game.tier === 1) this.startDescentMusic();
     this.showWarning(game.tier >= TOTAL_TIERS ? 'FINAL DROP' : 'GO!', 1.4);
   }
 
@@ -562,6 +604,7 @@ export class GameSystem extends createSystem({
     audio.play('die');
     window.setTimeout(() => audio.play('gameover'), 250);
     audio.stopMusic();
+    audio.stopLobby();
     if (this.musicStartTimer !== null) {
       window.clearTimeout(this.musicStartTimer);
       this.musicStartTimer = null;
