@@ -7,9 +7,11 @@ import {
   ConeGeometry,
   CylinderGeometry,
   DoubleSide,
+  EdgesGeometry,
   Float32BufferAttribute,
   Group,
   InstancedMesh,
+  LineBasicMaterial,
   LineSegments,
   Matrix4,
   Mesh,
@@ -34,7 +36,7 @@ import {
   TRACK_WIDTH
 } from '../constants.js';
 import { HelterPath, type PathSample } from '../ride/path.js';
-import { addOutline, LIGHT_GLSL, makeStripeTexture, makeTextTexture, NOISE_GLSL, toon } from './fx.js';
+import { LIGHT_GLSL, makeStripeTexture, makeTextTexture, NOISE_GLSL, toon } from './fx.js';
 
 export interface TrackHandles {
   group: Group;
@@ -378,6 +380,8 @@ function createFinishArch(end: PathSample): Group {
 // ---------------------------------------------------------------------------
 
 let gateGeometry: BoxGeometry | null = null;
+let gateEdges: EdgesGeometry | null = null;
+let gateEdgeMaterial: LineBasicMaterial | null = null;
 const gateMaterials = new Map<number, MeshToonMaterial>();
 let pennantGeometry: ConeGeometry | null = null;
 
@@ -399,8 +403,12 @@ export function createGate(color: number): Group {
   }
   const group = new Group();
   const board = new Mesh(gateGeometry, material);
-  addOutline(board, 0.035);
   group.add(board);
+  // Ink edges drawn as lines: the same crisp frame from every angle, unlike
+  // a pushed-out hull, which fattens edge-on and vanishes face-on.
+  gateEdges ??= new EdgesGeometry(gateGeometry);
+  gateEdgeMaterial ??= new LineBasicMaterial({ color: PAINT.ink });
+  group.add(new LineSegments(gateEdges, gateEdgeMaterial));
   const pennant = new Mesh(pennantGeometry, toon({ color: PAINT.gold }));
   pennant.position.y = BARRIER_SIZE.h / 2 + 0.25;
   group.add(pennant);

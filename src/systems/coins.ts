@@ -6,15 +6,17 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
+  Object3D,
   OctahedronGeometry,
   Quaternion,
+  TorusGeometry,
   Sprite,
   SpriteMaterial,
   Vector3
 } from '@iwsdk/core';
 
 import { LANE_X, PAINT } from '../constants.js';
-import { addOutline, makeGlow, makeTextTexture, toon } from '../env/fx.js';
+import { makeGlow, makeTextTexture, toon } from '../env/fx.js';
 import { HelterPath, helterPath } from '../ride/path.js';
 import { audio } from '../audio.js';
 import { game, on } from '../state.js';
@@ -70,7 +72,7 @@ interface Label {
   life: number;
 }
 
-const FLY_TIME = 0.42;
+const FLY_TIME = 0.5;
 const SPARK_LIFE = 0.5;
 const LABEL_LIFE = 0.75;
 
@@ -84,8 +86,7 @@ const LABEL_LIFE = 0.75;
 export class CoinSystem extends createSystem({}) {
   private coins!: InstancedMesh;
   private gems!: InstancedMesh;
-  private coinsOutline!: InstancedMesh;
-  private gemsOutline!: InstancedMesh;
+  private coinRims!: InstancedMesh;
   private pickups: Pickup[] = [];
   private pops: Pop[] = [];
   private flyers: Flyer[] = [];
@@ -110,31 +111,34 @@ export class CoinSystem extends createSystem({}) {
     const coinGeo = new CylinderGeometry(0.27, 0.27, 0.07, 22);
     coinGeo.rotateX(Math.PI / 2);
     const coinMaterial = toon({ color: 0xffc93c, emissive: 0x8a5a00 });
+    const rimMaterial = toon({ color: 0xb8801a, emissive: 0x3a2400 });
     const gemMaterial = toon({ color: PAINT.mint, emissive: 0x1b6f5c });
     this.coins = new InstancedMesh(coinGeo, coinMaterial, MAX_COINS);
+    // A darker gold rim, real geometry, so the coin keeps its edge from any
+    // angle — a pushed-out ink hull only ever showed at the silhouette.
+    const rimGeo = new TorusGeometry(0.265, 0.045, 8, 28);
+    this.coinRims = new InstancedMesh(rimGeo, rimMaterial, MAX_COINS);
+    this.coinRims.instanceMatrix = this.coins.instanceMatrix;
     const gemGeo = new OctahedronGeometry(0.26);
     gemGeo.scale(0.8, 1.25, 0.8);
     this.gems = new InstancedMesh(gemGeo, gemMaterial, MAX_GEMS);
-    for (const mesh of [this.coins, this.gems]) {
+    for (const mesh of [this.coins, this.coinRims, this.gems]) {
       mesh.instanceMatrix.setUsage(DynamicDrawUsage);
       mesh.frustumCulled = false;
       mesh.count = 0;
       this.scene.add(mesh);
     }
-    this.coinsOutline = addOutline(this.coins, 0.03) as InstancedMesh;
-    this.gemsOutline = addOutline(this.gems, 0.03) as InstancedMesh;
 
     // Flyers: the coin you just took, spinning up toward the counter.
     for (let i = 0; i < 10; i++) {
       const mesh = new Mesh(coinGeo, coinMaterial);
-      addOutline(mesh, 0.03);
+      mesh.add(new Mesh(rimGeo, rimMaterial));
       mesh.visible = false;
       this.scene.add(mesh);
       this.flyers.push({ mesh, from: new Vector3(), t: 0, active: false });
     }
     for (let i = 0; i < 3; i++) {
       const mesh = new Mesh(gemGeo, gemMaterial);
-      addOutline(mesh, 0.03);
       mesh.visible = false;
       this.scene.add(mesh);
       this.gemFlyers.push({ mesh, from: new Vector3(), t: 0, active: false });
@@ -181,9 +185,8 @@ export class CoinSystem extends createSystem({}) {
   private clear(): void {
     this.pickups = [];
     this.coins.count = 0;
+    this.coinRims.count = 0;
     this.gems.count = 0;
-    this.coinsOutline.count = 0;
-    this.gemsOutline.count = 0;
     this.streak = 0;
     for (const f of [...this.flyers, ...this.gemFlyers]) {
       f.active = false;
@@ -273,8 +276,7 @@ export class CoinSystem extends createSystem({}) {
 
     game.coinsTotal = this.pickups.reduce((n, p) => n + (p.gem ? GEM_VALUE : 1), 0);
     game.coins = 0;
-    this.coinsOutline.count = this.coins.count;
-    this.gemsOutline.count = this.gems.count;
+    this.coinRims.count = this.coins.count;
     this.writeAll(0);
   }
 
@@ -376,8 +378,19 @@ export class CoinSystem extends createSystem({}) {
     label.sprite.visible = true;
   }
 
-  /** Where taken coins fly to: just ahead of and above the rider's eyes. */
+  /**
+   * Where taken coins fly to: into the HUD counter itself, so they land in
+   * the number rather than hanging in front of it. Falls back to a point
+   * ahead of the eyes if the panel isn't up.
+   */
   private updateFlyTarget(): void {
+    const hud = (this.globals.panels as { hud?: { object3D?: Object3D } } | undefined)?.hud
+      ?.object3D;
+    if (hud && hud.visible) {
+      hud.getWorldPosition(this.flyTarget);
+      this.flyTarget.y -= 0.12;
+      return;
+    }
     this.player.getWorldDirection(this.rigForward);
     this.flyTarget.copy(this.headWorld).addScaledVector(this.rigForward, 1.1);
     this.flyTarget.y += 0.55;
@@ -392,7 +405,7 @@ export class CoinSystem extends createSystem({}) {
       const ease = 1 - (1 - k) * (1 - k);
       f.mesh.position.lerpVectors(f.from, this.flyTarget, ease);
       f.mesh.position.y += Math.sin(k * Math.PI) * 0.45; // a little arc
-      f.mesh.scale.setScalar(1 - 0.8 * k);
+      f.mesh.scale.setScalar(Math.max(0.001, 1 - k));
       f.mesh.rotation.y += delta * 16;
       if (k >= 1) {
         f.active = false;
