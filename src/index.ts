@@ -93,7 +93,7 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
   // so they press BEGIN themselves (the ride never auto-starts in VR).
   const startPanel = world
     .createTransformEntity(undefined, world.playerEntity)
-    .addComponent(PanelUI, { config: './ui/start.json', maxWidth: 1.35, maxHeight: 1.15 })
+    .addComponent(PanelUI, { config: './ui/start.json', maxWidth: 1.35, maxHeight: 1.9 })
     .addComponent(Interactable);
   startPanel.object3D!.position.set(0, -9999, -1.9);
 
@@ -160,10 +160,15 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
   // appears and the player presses BEGIN there.
   enterVrBtn?.addEventListener('click', () => {
     if (enterVrBtn.classList.contains('disabled')) return;
+    // This click is the page's one guaranteed DOM gesture — resume the
+    // audio context here so WebAudio SFX are unlocked before the session,
+    // where UIKit button clicks don't count as gestures.
+    audio.unlock();
     world.launchXR();
   });
   // RIDE IN BROWSER: desktop rider with keyboard lean — starts straight away.
   previewBtn?.addEventListener('click', () => {
+    audio.unlock();
     dismissIntro();
     game?.beginRun();
   });

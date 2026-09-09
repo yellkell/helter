@@ -38,6 +38,22 @@
     letter-spacing: 0.6;
     cursor: pointer;
   }
+  #return-top-btn {
+    display: none;
+    width: 100%;
+    padding: 1.8;
+    margin-top: 1.1;
+    background-color: #1e6f9e;
+    color: #fff4e0;
+    border-color: #e8322e;
+    border-width: 0.18;
+    border-radius: 1.4;
+    font-size: 2.4;
+    font-weight: bold;
+    text-align: center;
+    letter-spacing: 0.5;
+    cursor: pointer;
+  }
   .hint {
     font-size: 1.7;
     color: #6b625c;
@@ -49,5 +65,6 @@
   <span id="end-title">OFF THE RIDE</span>
   <span id="end-stats">TIER 1/3</span>
   <button id="retry-btn">RIDE AGAIN</button>
+  <button id="return-top-btn">BACK TO THE TOP</button>
   <span class="hint">POINT &amp; CLICK - OR JUST PULL TRIGGER</span>
 </div>

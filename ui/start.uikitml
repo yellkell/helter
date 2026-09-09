@@ -3,7 +3,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 54;
+    width: 64;
     padding: 3;
     background-color: #fff4e0;
     border-color: #e8322e;
@@ -24,6 +24,71 @@
     color: #1e6f9e;
     text-align: center;
     margin-top: 1.8;
+  }
+  /* Soundtrack picker — hidden until the rider has reached the bottom once. */
+  #song-selector {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    margin-top: 2.2;
+  }
+  .song-label {
+    font-size: 1.6;
+    font-weight: bold;
+    letter-spacing: 0.5;
+    color: #1e6f9e;
+    text-align: center;
+  }
+  #song-toggle {
+    width: 100%;
+    padding: 1.5;
+    margin-top: 0.7;
+    background-color: #1e6f9e;
+    color: #fff4e0;
+    border-color: #e8322e;
+    border-width: 0.18;
+    border-radius: 1;
+    font-size: 2.05;
+    font-weight: bold;
+    letter-spacing: 0.35;
+    text-align: center;
+    cursor: pointer;
+  }
+  #song-toggle:hover {
+    background-color: #2a8fc7;
+    border-color: #fff4e0;
+  }
+  #song-options {
+    display: none;
+    flex-direction: column;
+    width: 100%;
+    padding: 0.65;
+    margin-top: 0.35;
+    background-color: #ffe8c4;
+    border-color: #e8322e;
+    border-width: 0.12;
+    border-radius: 0.8;
+  }
+  .song-option {
+    width: 100%;
+    padding: 1.05;
+    margin-top: 0.25;
+    background-color: #fff4e0;
+    color: #1a1614;
+    border-color: #e8c9a0;
+    border-width: 0.08;
+    border-radius: 0.5;
+    font-size: 1.7;
+    font-weight: bold;
+    letter-spacing: 0.25;
+    text-align: center;
+    cursor: pointer;
+  }
+  .song-option:hover {
+    background-color: #e8322e;
+    color: #fff4e0;
+    border-color: #fff4e0;
   }
   #begin-btn {
     width: 100%;
@@ -49,6 +114,18 @@
   <span class="title">READY TO RIDE?</span>
   <span class="safety">STAND IN A CLEAR 2M x 2M SPACE</span>
   <span class="safety">LEAN LEFT / RIGHT TO PASS THE GATES</span>
+  <div id="song-selector">
+    <span class="song-label">CHOOSE YOUR TRACK</span>
+    <button id="song-toggle">ORIGINAL</button>
+    <div id="song-options">
+      <button id="song-original" class="song-option">ORIGINAL</button>
+      <button id="song-final" class="song-option">FINAL</button>
+      <button id="song-chase" class="song-option">CHASE</button>
+      <button id="song-sakupened" class="song-option">SAKUPENED</button>
+      <button id="song-fusion" class="song-option">FUTURE VIBE</button>
+      <button id="song-give-it-to-me" class="song-option">GIVE IT TO ME</button>
+    </div>
+  </div>
   <button id="begin-btn">TAKE THE SLIDE</button>
-  <span class="hint">POINT &amp; CLICK - OR PULL TRIGGER</span>
+  <span class="hint">POINT &amp; CLICK - OR PULL TRIGGER - DESKTOP: UP / DOWN FOR TRACK</span>
 </div>

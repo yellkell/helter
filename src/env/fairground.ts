@@ -39,7 +39,14 @@ export interface FairgroundHandles {
 /**
  * The fair at the foot of the tower: striped tents, a big wheel, bunting
  * strung between poles, and umbrellas down on the beach. All deterministic.
+ *
+ * Everything here is sized against a 300 m tower, not a person: the tents
+ * are big tops (25-40 m across), the wheel is a proper seaside wheel, and
+ * the bunting poles are lamppost height. At human scale the whole fair
+ * vanished into the tree line when seen from the balcony.
  */
+const TENT_SCALE = 2.4;
+const BOOTH_SCALE = 2.2;
 export function createFairground(heightAt: (x: number, z: number) => number): FairgroundHandles {
   const group = new Group();
   const rnd = mulberry32(77);
@@ -60,7 +67,8 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     [4, -78, 8, PAINT.red],
     [-88, 6, 5, PAINT.sea]
   ];
-  tentSpots.forEach(([x, z, r, color]) => {
+  tentSpots.forEach(([x, z, r0, color]) => {
+    const r = r0 * TENT_SCALE;
     const tent = new Group();
     const wall = new Mesh(
       new CylinderGeometry(r, r, r * 0.55, 24, 1, true),
@@ -72,12 +80,12 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
       createStripeMaterial({ colorA: PAINT.cream, colorB: color, stripes: 12, wear: 0.04 })
     );
     roof.position.y = r * 0.55 + r * 0.35;
-    const pole = new Mesh(new CylinderGeometry(0.08, 0.08, r * 0.6, 6), toon({ color: 0xf6f1e6 }));
+    const pole = new Mesh(new CylinderGeometry(r * 0.012, r * 0.012, r * 0.6, 6), toon({ color: 0xf6f1e6 }));
     pole.position.y = r * 0.9 + r * 0.3;
-    const pennant = new Mesh(new PlaneGeometry(1.2, 0.6), toon({ color, side: DoubleSide }));
-    pennant.position.set(0.6, r * 0.9 + r * 0.55, 0);
-    addOutline(wall, 0.1);
-    addOutline(roof, 0.1);
+    const pennant = new Mesh(new PlaneGeometry(r * 0.18, r * 0.09), toon({ color, side: DoubleSide }));
+    pennant.position.set(r * 0.09, r * 0.9 + r * 0.55, 0);
+    addOutline(wall, 0.12);
+    addOutline(roof, 0.12);
     tent.add(wall, roof, pole, pennant);
     tent.position.set(x, 0, z);
     tent.rotation.y = rnd() * Math.PI;
@@ -86,17 +94,17 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
 
   // --- Big wheel -------------------------------------------------------------
   const wheel = new Group();
-  const wheelRadius = 24;
+  const wheelRadius = 48;
   const wheelRoot = new Group();
-  wheelRoot.position.set(-118, wheelRadius + 6, 92);
+  wheelRoot.position.set(-130, wheelRadius + 8, 100);
   wheelRoot.rotation.y = 0.9;
   const steel = toon({ color: 0xf3efe6 });
-  const rim = new Mesh(new TorusGeometry(wheelRadius, 0.45, 10, 72), steel);
-  const rimInner = new Mesh(new TorusGeometry(wheelRadius - 3, 0.3, 8, 72), steel);
-  addOutline(rim, 0.14);
+  const rim = new Mesh(new TorusGeometry(wheelRadius, 0.9, 10, 96), steel);
+  const rimInner = new Mesh(new TorusGeometry(wheelRadius - 6, 0.6, 8, 96), steel);
+  addOutline(rim, 0.16);
   wheel.add(rim, rimInner);
-  const spokeGeo = new BoxGeometry(0.28, wheelRadius * 2, 0.28);
-  const gondolaGeo = new BoxGeometry(2.6, 2.2, 2.2);
+  const spokeGeo = new BoxGeometry(0.55, wheelRadius * 2, 0.55);
+  const gondolaGeo = new BoxGeometry(5.2, 4.4, 4.4);
   const gondolaColors = [PAINT.red, PAINT.gold, PAINT.sea, PAINT.mint];
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI;
@@ -115,14 +123,14 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   }
   wheelRoot.add(wheel);
   // Hub and A-frame legs.
-  const hub = new Mesh(new CylinderGeometry(1.2, 1.2, 3.2, 16), toon({ color: PAINT.red }));
+  const hub = new Mesh(new CylinderGeometry(2.4, 2.4, 6.4, 16), toon({ color: PAINT.red }));
   hub.rotation.x = Math.PI / 2;
   wheelRoot.add(hub);
-  const legGeo = new BoxGeometry(0.9, wheelRadius + 8, 0.9);
+  const legGeo = new BoxGeometry(1.8, wheelRadius + 12, 1.8);
   [-1, 1].forEach((side) => {
     [-1, 1].forEach((front) => {
       const leg = new Mesh(legGeo, toon({ color: PAINT.red }));
-      leg.position.set(side * 7, -(wheelRadius + 6) / 2 + 0.5, front * 2.6);
+      leg.position.set(side * 14, -(wheelRadius + 8) / 2 + 1, front * 5.2);
       leg.rotation.z = -side * 0.27;
       leg.rotation.x = front * 0.1;
       wheelRoot.add(leg);
@@ -134,9 +142,10 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   const poleCount = 14;
   const poleRadius = 44;
   const poleMat = toon({ color: 0xf6f1e6 });
-  const poleGeo = new CylinderGeometry(0.09, 0.11, 6, 8);
+  const poleHeight = 12;
+  const poleGeo = new CylinderGeometry(0.18, 0.22, poleHeight, 8);
   const flagColors = [PAINT.red, PAINT.gold, PAINT.sea, PAINT.cream, PAINT.mint];
-  const flags = new InstancedMesh(new PlaneGeometry(0.5, 0.65), toon({ side: DoubleSide }), poleCount * 12);
+  const flags = new InstancedMesh(new PlaneGeometry(1.0, 1.3), toon({ side: DoubleSide }), poleCount * 12);
   const linePts: number[] = [];
   const m = new Matrix4();
   const q = new Quaternion();
@@ -148,10 +157,10 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     const a0 = (i / poleCount) * Math.PI * 2;
     const a1 = ((i + 1) / poleCount) * Math.PI * 2;
     const pole = new Mesh(poleGeo, poleMat);
-    pole.position.set(Math.cos(a0) * poleRadius, 3, Math.sin(a0) * poleRadius);
+    pole.position.set(Math.cos(a0) * poleRadius, poleHeight / 2, Math.sin(a0) * poleRadius);
     group.add(pole);
-    const finialBall = new Mesh(new SphereGeometry(0.22, 10, 8), toon({ color: PAINT.gold }));
-    finialBall.position.set(pole.position.x, 6.1, pole.position.z);
+    const finialBall = new Mesh(new SphereGeometry(0.45, 10, 8), toon({ color: PAINT.gold }));
+    finialBall.position.set(pole.position.x, poleHeight + 0.2, pole.position.z);
     group.add(finialBall);
     // A sagging string of flags to the next pole.
     const x0 = Math.cos(a0) * poleRadius;
@@ -159,21 +168,22 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     const x1 = Math.cos(a1) * poleRadius;
     const z1 = Math.sin(a1) * poleRadius;
     const steps = 12;
+    const stringY = poleHeight - 0.2;
     let px = x0;
-    let py = 5.9;
+    let py = stringY;
     let pz = z0;
     for (let k = 1; k <= steps; k++) {
       const t = k / steps;
-      const sag = Math.sin(t * Math.PI) * 1.4;
+      const sag = Math.sin(t * Math.PI) * 2.8;
       const x = x0 + (x1 - x0) * t;
       const z = z0 + (z1 - z0) * t;
-      const y = 5.9 - sag;
+      const y = stringY - sag;
       linePts.push(px, py, pz, x, y, z);
       px = x;
       py = y;
       pz = z;
       if (k < steps) {
-        p.set(x, y - 0.4, z);
+        p.set(x, y - 0.8, z);
         q.setFromAxisAngle(new Vector3(0, 1, 0), Math.atan2(x1 - x0, z1 - z0) + Math.PI / 2);
         m.compose(p, q, one);
         flags.setMatrixAt(f, m);
@@ -191,19 +201,19 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
 
   // --- Beach umbrellas and a ticket booth ------------------------------------
   const umbrellaCount = 18;
-  const canopies = new InstancedMesh(new ConeGeometry(1.6, 0.7, 10), toon({ side: DoubleSide }), umbrellaCount);
-  const stems = new InstancedMesh(new CylinderGeometry(0.04, 0.04, 2.2, 5), poleMat, umbrellaCount);
+  const canopies = new InstancedMesh(new ConeGeometry(3.4, 1.5, 10), toon({ side: DoubleSide }), umbrellaCount);
+  const stems = new InstancedMesh(new CylinderGeometry(0.09, 0.09, 4.6, 5), poleMat, umbrellaCount);
   for (let i = 0; i < umbrellaCount; i++) {
     const x = (rnd() - 0.5) * 520;
     const z = 250 + rnd() * 60;
     const y = heightAt(x, z);
     if (y < 0.2) continue;
-    p.set(x, y + 2.3, z);
+    p.set(x, y + 4.8, z);
     m.compose(p, q.identity(), one);
     canopies.setMatrixAt(i, m);
     color.setHex(flagColors[i % flagColors.length]);
     canopies.setColorAt(i, color);
-    p.set(x, y + 1.1, z);
+    p.set(x, y + 2.3, z);
     m.compose(p, q, one);
     stems.setMatrixAt(i, m);
   }
@@ -221,7 +231,8 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   boothRoof.position.y = 3.8;
   boothRoof.rotation.y = Math.PI / 4;
   booth.add(boothBody, boothRoof);
-  booth.position.set(34, 0, 30);
+  booth.scale.setScalar(BOOTH_SCALE);
+  booth.position.set(30, 0, 26);
   booth.rotation.y = -0.7;
   group.add(booth);
 

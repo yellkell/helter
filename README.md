@@ -33,9 +33,13 @@ you're off the ride. Make it to the bottom and the fair is waiting.
   earns the points. One mint gem per tier, worth five, hides in a side
   lane. The HUD keeps count and the end screen shows what you took of
   what was on offer.
-- **Landings**: a 3-2-1 count on each bay, then the next tier launches.
+- **Landings**: DOWN's voiced 3-2-1 count on each bay, then the next tier
+  launches.
+- **Soundtrack**: reach the bottom once and the lobby gains a track picker
+  (DOWN's five, plus **Final**). Your pick is remembered; after a finished
+  ride the end screen takes you **back to the top** so you can change it.
 - **Desktop**: **A / D** or the **arrow keys** lean. **Enter** or **Space**
-  starts and retries.
+  starts and retries. **Up / Down** pick the track in the lobby.
 
 URL flags: `?calm` rides at two-thirds speed for a gentler spin, `?ghost`
 turns the gates into scenery so nothing can stop you, `?turbo` shortens the
@@ -74,7 +78,7 @@ src/
   systems/          ECS systems: slide rider, game referee, environment
   env/              the world: sky, terrain, sea, tower, track, fairground, fx
 ui/                 UIKitML spatial panels (start / HUD / warning / end)
-public/audio        the DOWN soundtrack and voice lines
+public/audio        the DOWN soundtracks, Final, and the voice lines
 ```
 
 ## What came from DOWN, and what changed

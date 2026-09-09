@@ -11,7 +11,12 @@ import {
   type Entity
 } from '@iwsdk/core';
 
-import { audio } from '../audio.js';
+import {
+  MUSIC_TRACKS,
+  audio,
+  isMusicId,
+  type MusicId
+} from '../audio.js';
 import {
   BARRIER_SIZE,
   GROUND_LANDING_Y,
@@ -31,6 +36,34 @@ export interface PanelEntities {
   hud: Entity;
   end: Entity;
   warn: Entity;
+}
+
+const SONGS_UNLOCKED_KEY = 'helter.songs-unlocked.v1';
+const SELECTED_SONG_KEY = 'helter.selected-song.v1';
+
+function readStoredSong(): MusicId {
+  try {
+    const stored = window.localStorage.getItem(SELECTED_SONG_KEY);
+    return isMusicId(stored) ? stored : 'original';
+  } catch {
+    return 'original';
+  }
+}
+
+function hasUnlockedSongs(): boolean {
+  try {
+    return window.localStorage.getItem(SONGS_UNLOCKED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function storeValue(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Storage can be unavailable in private/headset browser modes.
+  }
 }
 
 /**
@@ -66,6 +99,17 @@ export class GameSystem extends createSystem({
   private warnText: UIKit.Text | null = null;
   private endTitle: UIKit.Text | null = null;
   private endStats: UIKit.Text | null = null;
+  private endAction: UIKit.Text | null = null;
+  private returnTopAction: UIKit.Text | null = null;
+
+  private songSelector: UIKit.Container | null = null;
+  private songOptions: UIKit.Container | null = null;
+  private songToggle: UIKit.Text | null = null;
+  /** Reaching the bottom once unlocks the soundtrack picker for good. */
+  private songsUnlocked = hasUnlockedSongs();
+  private selectedSong = readStoredSong();
+  private songMenuOpen = false;
+  private musicStartTimer: number | null = null;
 
   private hudCache: Record<string, string> = {};
   private warnTimer = 0;
@@ -89,6 +133,7 @@ export class GameSystem extends createSystem({
   }
 
   init(): void {
+    audio.selectMusic(this.selectedSong);
     this.wireStartPanel();
     this.wireHudPanel();
     this.wireEndPanel();
@@ -97,19 +142,35 @@ export class GameSystem extends createSystem({
     on('slide-complete', () => this.onTierComplete());
     on('final-slide-complete', () => this.onWin());
 
-    // Desktop: Enter / Space start or retry, mirroring the trigger shortcuts.
+    // Desktop: Enter / Space start or retry, mirroring the trigger shortcuts;
+    // Up / Down cycle the soundtrack while the lobby is up (the spatial
+    // panel can't be clicked with a mouse).
     window.addEventListener('keydown', (e) => {
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && game.phase === 'START' && this.lobbyActive) {
+        if (!this.songsUnlocked) return;
+        const ids = MUSIC_TRACKS.map((track) => track.id);
+        const step = e.key === 'ArrowDown' ? 1 : ids.length - 1;
+        const next = ids[(ids.indexOf(this.selectedSong) + step) % ids.length];
+        audio.blip(1000);
+        this.selectSong(next);
+        return;
+      }
       if (e.key !== 'Enter' && e.key !== ' ') return;
       if (game.phase === 'START' && this.lobbyActive) this.startGame();
       else if ((game.phase === 'WIN' || game.phase === 'GAME_OVER') && this.winWait <= 0 && this.endArm > 0.6) {
-        this.retry();
+        this.handleEndAction();
       }
     });
   }
 
-  /** Start immediately — used by the 2D "RIDE IN BROWSER" (desktop). */
+  /**
+   * The 2D "RIDE IN BROWSER" button (desktop). A first ride starts straight
+   * away; once the soundtrack picker is unlocked the lobby comes up first so
+   * the desktop rider gets the same choice of track as the headset rider.
+   */
   beginRun(): void {
-    this.startGame();
+    if (this.songsUnlocked) this.showStartLobby();
+    else this.startGame();
   }
 
   /**
@@ -150,7 +211,39 @@ export class GameSystem extends createSystem({
       if (!doc) return;
       const beginBtn = doc.getElementById('begin-btn') as UIKit.Text;
       beginBtn?.addEventListener('click', () => this.startGame());
+
+      this.songSelector = doc.getElementById('song-selector') as UIKit.Container;
+      this.songOptions = doc.getElementById('song-options') as UIKit.Container;
+      this.songToggle = doc.getElementById('song-toggle') as UIKit.Text;
+      this.songToggle?.addEventListener('click', () => {
+        audio.blip(1100);
+        this.songMenuOpen = !this.songMenuOpen;
+        this.applySongMenu();
+      });
+      MUSIC_TRACKS.forEach((track, index) => {
+        const option = doc.getElementById(`song-${track.id}`) as UIKit.Text | null;
+        option?.addEventListener('click', () => {
+          audio.blip(900 + index * 90);
+          this.selectSong(track.id);
+        });
+      });
+      this.applySongMenu();
     });
+  }
+
+  private selectSong(id: MusicId): void {
+    this.selectedSong = id;
+    this.songMenuOpen = false;
+    storeValue(SELECTED_SONG_KEY, id);
+    audio.selectMusic(id);
+    this.applySongMenu();
+  }
+
+  private applySongMenu(): void {
+    this.songSelector?.setProperties({ display: this.songsUnlocked ? 'flex' : 'none' });
+    this.songOptions?.setProperties({ display: this.songMenuOpen ? 'flex' : 'none' });
+    const track = MUSIC_TRACKS.find((candidate) => candidate.id === this.selectedSong);
+    this.songToggle?.setProperties({ text: track?.label ?? 'ORIGINAL' });
   }
 
   private wireHudPanel(): void {
@@ -171,9 +264,28 @@ export class GameSystem extends createSystem({
       if (!doc) return;
       this.endTitle = doc.getElementById('end-title') as UIKit.Text;
       this.endStats = doc.getElementById('end-stats') as UIKit.Text;
-      const retryBtn = doc.getElementById('retry-btn') as UIKit.Text;
-      retryBtn?.addEventListener('click', () => this.retry());
+      this.endAction = doc.getElementById('retry-btn') as UIKit.Text;
+      this.endAction?.addEventListener('click', () => this.handleEndAction());
+      this.returnTopAction = doc.getElementById('return-top-btn') as UIKit.Text;
+      this.returnTopAction?.addEventListener('click', () => this.returnToTop());
+      this.applyEndActions();
     });
+  }
+
+  /** A finished ride goes back to the top (where the picker now is); a
+   * fall retries straight away, with BACK TO THE TOP as a second option
+   * once there is a picker to go back to. */
+  private applyEndActions(): void {
+    const won = game.phase === 'WIN';
+    this.endAction?.setProperties({ text: won ? 'BACK TO THE TOP' : 'RIDE AGAIN' });
+    this.returnTopAction?.setProperties({
+      display: game.phase === 'GAME_OVER' && this.songsUnlocked ? 'flex' : 'none'
+    });
+  }
+
+  private handleEndAction(): void {
+    if (game.phase === 'WIN') this.returnToTop();
+    else this.retry();
   }
 
   private wireWarnPanel(): void {
@@ -292,13 +404,26 @@ export class GameSystem extends createSystem({
 
   // -- Phase transitions ----------------------------------------------------
 
+  private startRunAudio(): void {
+    if (this.musicStartTimer !== null) window.clearTimeout(this.musicStartTimer);
+    audio.stopAll();
+    audio.play('begin', 0.82);
+    // begin.ogg is 560 ms. Give the full line clear air before the music enters.
+    this.musicStartTimer = window.setTimeout(() => {
+      audio.startMusic();
+      this.musicStartTimer = null;
+    }, 850);
+  }
+
   private startGame(): void {
     if (this.started) return;
+    audio.blip(1250);
     this.started = true;
     this.lobbyActive = false;
+    this.songMenuOpen = false;
+    this.applySongMenu();
     this.setStartPanelShown(false);
-    audio.play('begin');
-    window.setTimeout(() => audio.startMusic(), 400);
+    this.startRunAudio();
     this.layoutHud();
     this.setPanelVisible(this.panels?.hud, true);
     this.setPointersVisible(false);
@@ -327,14 +452,35 @@ export class GameSystem extends createSystem({
     this.setPanelVisible(this.panels?.hud, true);
     this.setPointersVisible(false);
     this.hudCache = {};
-    audio.play('begin');
-    window.setTimeout(() => audio.startMusic(), 400);
+    this.startRunAudio();
     this.enterLanding(LANDING_HOLD + 0.8);
+  }
+
+  /** A completed ride returns to the balcony lobby so the newly unlocked
+   * soundtrack picker gets a deliberate moment before the next descent. */
+  private returnToTop(): void {
+    resetGameState();
+    emit('game-reset');
+    this.env?.confetti.stop();
+    this.world.getSystem(SlideSystem)?.placeAtStart();
+    this.setEndPanelShown(false);
+    this.setPanelVisible(this.panels?.hud, false);
+    this.setPanelVisible(this.panels?.warn, false);
+    this.winWait = 0;
+    this.hudCache = {};
+    this.songMenuOpen = false;
+    this.started = false;
+    if (this.musicStartTimer !== null) {
+      window.clearTimeout(this.musicStartTimer);
+      this.musicStartTimer = null;
+    }
+    audio.stopAll();
+    this.showStartLobby();
   }
 
   /**
    * Standing on a landing (or the balcony). Hold for a beat — no gates, no
-   * motion — with 3-2-1 beeps, then the next tier launches.
+   * motion — with DOWN's voiced 3-2-1 count, then the next tier launches.
    */
   private enterLanding(hold: number): void {
     game.phase = 'LANDING';
@@ -364,6 +510,10 @@ export class GameSystem extends createSystem({
 
   private onWin(): void {
     game.phase = 'WIN';
+    this.songsUnlocked = true;
+    storeValue(SONGS_UNLOCKED_KEY, '1');
+    this.applySongMenu();
+    this.applyEndActions();
     game.arrival = 1;
     this.world.getSystem(EnvironmentSystem)?.landAt(this.player.position);
     audio.play('welldone');
@@ -388,7 +538,12 @@ export class GameSystem extends createSystem({
     audio.play('die');
     window.setTimeout(() => audio.play('gameover'), 250);
     audio.stopMusic();
+    if (this.musicStartTimer !== null) {
+      window.clearTimeout(this.musicStartTimer);
+      this.musicStartTimer = null;
+    }
     emit('game-over');
+    this.applyEndActions();
 
     const altitude = Math.max(0, Math.round(this.player.position.y - GROUND_LANDING_Y));
     this.endTitle?.setProperties({ text: 'OFF THE RIDE' });
@@ -435,7 +590,7 @@ export class GameSystem extends createSystem({
       // Escape hatch: after a short arm delay, a bare trigger pull on
       // either controller retries — no pointing at the panel required.
       this.endArm += delta;
-      if (this.endArm > 1.2 && this.selectPressed()) this.retry();
+      if (this.endArm > 1.2 && this.selectPressed()) this.handleEndAction();
       return;
     }
     if (game.phase === 'START') {
@@ -472,7 +627,9 @@ export class GameSystem extends createSystem({
     this.setHud('big', Math.ceil(remaining).toFixed(0));
     this.setHud('status', game.tier === 1 ? 'GRAB THE RAIL - LOOK DOWN THE SLIDE' : 'CATCH YOUR BREATH');
     if (remaining <= this.beepAt && this.beepAt > 0) {
-      audio.play('square', 0.7);
+      // DOWN's voiced count: THREE... TWO... ONE... then the launch.
+      const cue = this.beepAt === 3 ? 'three' : this.beepAt === 2 ? 'two' : 'one';
+      audio.play(cue, 0.9);
       this.beepAt -= 1;
     }
     if (remaining <= 0) this.enterSlide();
