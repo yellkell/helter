@@ -167,18 +167,12 @@ export class CoinSystem extends createSystem({}) {
     for (let i = 0; i < 10; i++) {
       const mesh = new Mesh(coinGeo, coinMaterial);
       mesh.add(new Mesh(rimGeo, rimMaterial));
-      const halo = new Mesh(haloGeo, coinHaloMaterial);
-      halo.renderOrder = 5;
-      mesh.add(halo);
       mesh.visible = false;
       this.scene.add(mesh);
       this.flyers.push({ mesh, from: new Vector3(), t: 0, active: false });
     }
     for (let i = 0; i < 3; i++) {
       const mesh = new Mesh(gemGeo, gemMaterial);
-      const halo = new Mesh(haloGeo, gemHaloMaterial);
-      halo.renderOrder = 5;
-      mesh.add(halo);
       mesh.visible = false;
       this.scene.add(mesh);
       this.gemFlyers.push({ mesh, from: new Vector3(), t: 0, active: false });
@@ -393,8 +387,13 @@ export class CoinSystem extends createSystem({}) {
     const flyer = pool.find((f) => !f.active) ?? pool[0];
     flyer.active = true;
     flyer.t = 0;
-    flyer.from.copy(p.position);
-    flyer.mesh.position.copy(p.position);
+    // You take a coin by passing through it, so its position is your head.
+    // Launch the flight from a point out in front instead, or the first
+    // frames of the arc happen inside the camera.
+    this.player.getWorldDirection(this.rigForward);
+    flyer.from.copy(p.position).addScaledVector(this.rigForward, 1.4);
+    flyer.from.y -= 0.2;
+    flyer.mesh.position.copy(flyer.from);
     flyer.mesh.scale.setScalar(1);
     flyer.mesh.visible = true;
 
@@ -637,6 +636,7 @@ function createHaloMaterial(
     uniforms: { uTime, uColor: { value: new Color(color) }, uSize: { value: size } },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
+      varying float vFade;
       uniform float uSize;
       uniform float uTime;
       void main() {
@@ -651,17 +651,21 @@ function createHaloMaterial(
         vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
         vec3 camUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
         float pulse = 1.0 + 0.08 * sin(uTime * 4.0 + center.y * 0.7);
+        // Fade out close to the eye: a 1.5m additive quad at head height
+        // whites out the whole view as you sweep through a coin.
+        vFade = smoothstep(0.8, 3.2, distance(center, cameraPosition));
         vec3 wp = center + (camRight * position.x + camUp * position.y) * uSize * sc * pulse;
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
       }
     `,
     fragmentShader: /* glsl */ `
       varying vec2 vUv;
+      varying float vFade;
       uniform vec3 uColor;
       void main() {
         float d = length(vUv - 0.5) * 2.0;
         float a = 1.0 - smoothstep(0.0, 1.0, d);
-        a = a * a * 0.45;
+        a = a * a * 0.45 * vFade;
         gl_FragColor = vec4(uColor * a, a);
         #include <colorspace_fragment>
       }

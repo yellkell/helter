@@ -27,24 +27,81 @@ export interface SeaHandles {
  * it laps against), a lacy foam line where it meets the beach, drifting
  * crest streaks, hard sun glints, and a hint of sky in the fresnel.
  */
+/**
+ * The swell, shared by the water shader and the boats: three long crossing
+ * sines, gentle enough for comfort in VR. `WAVE_GLSL` and `waveHeightAt`
+ * below are twins — keep them in step.
+ */
+const WAVE_GLSL = /* glsl */ `
+  float waveHeight(vec2 p, float t) {
+    float h = 0.55 * sin(dot(p, vec2(0.045, 0.028)) + t * 0.85);
+    h += 0.38 * sin(dot(p, vec2(-0.032, 0.051)) + t * 1.15);
+    h += 0.22 * sin(dot(p, vec2(0.071, -0.019)) + t * 1.60);
+    return h;
+  }
+  vec2 waveGradient(vec2 p, float t) {
+    vec2 g = vec2(0.045, 0.028) * 0.55 * cos(dot(p, vec2(0.045, 0.028)) + t * 0.85);
+    g += vec2(-0.032, 0.051) * 0.38 * cos(dot(p, vec2(-0.032, 0.051)) + t * 1.15);
+    g += vec2(0.071, -0.019) * 0.22 * cos(dot(p, vec2(0.071, -0.019)) + t * 1.60);
+    return g;
+  }
+`;
+
+/** JS twin of `waveHeight` — the boats ride the same swell as the shader. */
+function waveHeightAt(x: number, z: number, t: number): number {
+  let h = 0.55 * Math.sin(x * 0.045 + z * 0.028 + t * 0.85);
+  h += 0.38 * Math.sin(x * -0.032 + z * 0.051 + t * 1.15);
+  h += 0.22 * Math.sin(x * 0.071 + z * -0.019 + t * 1.6);
+  return h;
+}
+
+/** JS twin of `waveGradient`, for tilting the boats into the swell. */
+function waveGradientAt(x: number, z: number, t: number): [number, number] {
+  const c1 = 0.55 * Math.cos(x * 0.045 + z * 0.028 + t * 0.85);
+  const c2 = 0.38 * Math.cos(x * -0.032 + z * 0.051 + t * 1.15);
+  const c3 = 0.22 * Math.cos(x * 0.071 + z * -0.019 + t * 1.6);
+  return [
+    0.045 * c1 + -0.032 * c2 + 0.071 * c3,
+    0.028 * c1 + 0.051 * c2 + -0.019 * c3
+  ];
+}
+
+export { waveHeightAt, waveGradientAt };
+
 export function createSea(): SeaHandles {
   const group = new Group();
   const uTime = { value: 0 };
 
-  const material = new ShaderMaterial({
+  const makeWaterMaterial = (displace: boolean, halfSpan: number): ShaderMaterial =>
+    new ShaderMaterial({
     fog: true,
     uniforms: UniformsUtils.merge([
       UniformsLib.fog,
       {
         uTime,
-        uSun: { value: new Vector3(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z) }
+        uSun: { value: new Vector3(SUN_DIR.x, SUN_DIR.y, SUN_DIR.z) },
+        uDisplace: { value: displace ? 1 : 0 },
+        uHalfSpan: { value: halfSpan }
       }
     ]),
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
+      uniform float uTime;
+      uniform float uDisplace;
+      uniform float uHalfSpan;
       #include <fog_pars_vertex>
+      ${LAND_HEIGHT_GLSL}
+      ${WAVE_GLSL}
       void main() {
         vec4 wp = modelMatrix * vec4(position, 1.0);
+        // The near plane actually rides the swell. Amplitude tapers to zero
+        // at its rim so it meets the flat far ocean without a seam, and in
+        // the shallows so the water never pokes up through the beach.
+        if (uDisplace > 0.5) {
+          float edge = 1.0 - smoothstep(0.72, 0.98, max(abs(position.x), abs(position.y)) / uHalfSpan);
+          float shallow = smoothstep(0.5, 6.0, -landHeight(wp.xz));
+          wp.y += waveHeight(wp.xz, uTime) * edge * shallow;
+        }
         vWorld = wp.xyz;
         vec4 mvPosition = viewMatrix * wp;
         gl_Position = projectionMatrix * mvPosition;
@@ -59,6 +116,7 @@ export function createSea(): SeaHandles {
       ${NOISE_GLSL}
       ${LIGHT_GLSL}
       ${LAND_HEIGHT_GLSL}
+      ${WAVE_GLSL}
 
       void main() {
         vec2 p = vWorld.xz;
@@ -73,12 +131,14 @@ export function createSea(): SeaHandles {
         col = mix(col, mid, 1.0 - smoothstep(9.0, 11.0, depth));
         col = mix(col, shallow, 1.0 - smoothstep(2.6, 3.4, depth));
 
-        // A gentle swell, only for the glints and the sky tint.
-        float e = 0.8;
-        float h0 = vnoise(vec3(p * 0.09, t * 0.25)) + sin(p.x * 0.07 + t * 0.7) * 0.4;
-        float hx = vnoise(vec3((p + vec2(e, 0.0)) * 0.09, t * 0.25)) + sin((p.x + e) * 0.07 + t * 0.7) * 0.4;
-        float hz = vnoise(vec3((p + vec2(0.0, e)) * 0.09, t * 0.25));
-        vec3 n = normalize(vec3(h0 - hx, e * 1.4, h0 - hz));
+        // Surface normal from the same swell the near plane is displaced by,
+        // plus a little noise chop — so light and glints travel with the water.
+        vec2 grad = waveGradient(p, t);
+        float chopE = 0.8;
+        float c0 = vnoise(vec3(p * 0.09, t * 0.25));
+        float cx = vnoise(vec3((p + vec2(chopE, 0.0)) * 0.09, t * 0.25));
+        float cz = vnoise(vec3((p + vec2(0.0, chopE)) * 0.09, t * 0.25));
+        vec3 n = normalize(vec3(-grad.x * 1.6 + (c0 - cx), 1.0, -grad.y * 1.6 + (c0 - cz)));
         vec3 viewDir = normalize(cameraPosition - vWorld);
         float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
         col = mix(col, vec3(0.60, 0.78, 0.94), fresnel * 0.3);
@@ -120,10 +180,22 @@ export function createSea(): SeaHandles {
     `
   });
 
-  const plane = new Mesh(new PlaneGeometry(9000, 9000, 1, 1), material);
-  plane.rotation.x = -Math.PI / 2;
-  plane.position.y = 0; // sea level
-  group.add(plane);
+  // Far ocean: one flat plane out to the horizon (distant water reads flat).
+  const far = new Mesh(new PlaneGeometry(9000, 9000, 1, 1), makeWaterMaterial(false, 4500));
+  far.rotation.x = -Math.PI / 2;
+  group.add(far);
+
+  // Near water: the stretch you actually look down on, subdivided enough to
+  // show a real moving swell. Sits a hair above the far plane to avoid
+  // z-fighting where they overlap.
+  const NEAR_SPAN = 3000;
+  const near = new Mesh(
+    new PlaneGeometry(NEAR_SPAN, NEAR_SPAN, 300, 300),
+    makeWaterMaterial(true, NEAR_SPAN / 2)
+  );
+  near.rotation.x = -Math.PI / 2;
+  near.position.set(0, 0.02, 900);
+  group.add(near);
 
   // A few sailing boats out on the water.
   const boats: Group[] = [];

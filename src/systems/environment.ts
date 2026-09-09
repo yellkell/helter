@@ -3,7 +3,7 @@ import { createSystem, Vector3, VisibilityState } from '@iwsdk/core';
 import { SLIDE_SPEED, VIEW_MODE } from '../constants.js';
 import type { FairgroundHandles } from '../env/fairground.js';
 import type { Confetti } from '../env/fx.js';
-import type { SeaHandles } from '../env/sea.js';
+import { type SeaHandles, waveGradientAt, waveHeightAt } from '../env/sea.js';
 import type { SkyHandles } from '../env/sky.js';
 import type { TowerHandles } from '../env/tower.js';
 import type { StreakHandles, TrackHandles } from '../env/track.js';
@@ -72,10 +72,13 @@ export class EnvironmentSystem extends createSystem({}) {
     // The fair.
     env.fair.wheel.rotation.z += delta * 0.12;
     env.sea.boats.forEach((boat) => {
-      const phase = boat.userData.phase as number;
-      boat.position.y = Math.sin(t * 0.8 + phase) * 0.35;
-      boat.rotation.z = Math.sin(t * 0.6 + phase) * 0.06;
-      boat.rotation.x = Math.cos(t * 0.7 + phase) * 0.04;
+      // Ride the same swell the water shader displaces, so the boats sit in
+      // the waves instead of bobbing to their own rhythm.
+      const { x, z } = boat.position;
+      boat.position.y = waveHeightAt(x, z, t) - 0.15;
+      const [gx, gz] = waveGradientAt(x, z, t);
+      boat.rotation.z = -gx * 2.2;
+      boat.rotation.x = gz * 2.2;
     });
     this.updateGulls(t);
 

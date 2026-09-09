@@ -250,6 +250,21 @@ export class GameSystem extends createSystem({
     const desktop = this.visibilityState.value === VisibilityState.NonImmersive;
     hud.position.set(0, desktop ? 0.95 : 2.45, -3.6);
     hud.rotation.x = desktop ? -0.35 : 0.14;
+    this.layoutWarn();
+  }
+
+  /**
+   * The warning banner sits well clear of the HUD. It used to be pinned at
+   * y 1.05 while the desktop HUD sat at 0.95 a metre further out, so "GO!"
+   * and "FINAL DROP" landed straight on top of the readout and neither
+   * could be read.
+   */
+  private layoutWarn(): void {
+    const warn = this.panels?.warn?.object3D;
+    if (!warn) return;
+    const desktop = this.visibilityState.value === VisibilityState.NonImmersive;
+    warn.position.set(0, desktop ? -0.55 : 1.15, -2.6);
+    warn.rotation.x = desktop ? 0.3 : -0.18;
   }
 
   private setHud(key: 'tier' | 'coins' | 'big' | 'alt' | 'status', value: string): void {
@@ -269,6 +284,7 @@ export class GameSystem extends createSystem({
   }
 
   private showWarning(text: string, seconds: number): void {
+    this.layoutWarn(); // in case the session flipped between desktop and VR
     this.warnText?.setProperties({ text });
     this.setPanelVisible(this.panels?.warn, true);
     this.warnTimer = seconds;
