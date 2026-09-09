@@ -97,12 +97,15 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
     .addComponent(Interactable);
   startPanel.object3D!.position.set(0, -9999, -1.9);
 
+  // The HUD and the warning banner are never visibility-toggled either: a
+  // panel that sat invisible from boot came up blank the first time it was
+  // shown in the headset. Like the menus, they stay live and park far below
+  // the world until the game places them.
   const hudPanel = world
     .createTransformEntity(undefined, world.playerEntity)
-    .addComponent(PanelUI, { config: './ui/hud.json', maxWidth: 1.1, maxHeight: 0.7 });
-  hudPanel.object3D!.position.set(0, 2.45, -3.6);
+    .addComponent(PanelUI, { config: './ui/hud.json', maxWidth: 1.1, maxHeight: 0.75 });
+  hudPanel.object3D!.position.set(0, -9999, -3.6);
   hudPanel.object3D!.rotation.x = 0.14;
-  hudPanel.object3D!.visible = false;
 
   // The end panel stays live from boot (visibility-toggling a panel can
   // leave its ray interaction stale) — it parks far below until needed.
@@ -115,9 +118,8 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
   const warnPanel = world
     .createTransformEntity(undefined, world.playerEntity)
     .addComponent(PanelUI, { config: './ui/warn.json', maxWidth: 2.2, maxHeight: 0.5 });
-  warnPanel.object3D!.position.set(0, 1.05, -2.6);
+  warnPanel.object3D!.position.set(0, -9999, -2.6);
   warnPanel.object3D!.rotation.x = -0.25;
-  warnPanel.object3D!.visible = false;
 
   world.globals.panels = {
     start: startPanel,

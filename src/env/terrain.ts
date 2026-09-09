@@ -15,7 +15,15 @@ import {
   Vector3
 } from '@iwsdk/core';
 
-import { addOutline, LIGHT_GLSL, mergeGeometries, mulberry32, NOISE_GLSL, toon } from './fx.js';
+import {
+  addOutline,
+  LIGHT_GLSL,
+  mergeGeometries,
+  mulberry32,
+  NOISE_TEX_GLSL,
+  noiseUniform,
+  toon
+} from './fx.js';
 
 export interface TerrainHandles {
   group: Group;
@@ -137,9 +145,11 @@ export const LAND_HEIGHT_GLSL = /* glsl */ `
  * faces, snow on the ridge — lit in cel bands and fogged.
  */
 function createLandMaterial(): ShaderMaterial {
+  const uniforms = UniformsUtils.merge([UniformsLib.fog, {}]);
+  uniforms.uNoise = noiseUniform();
   return new ShaderMaterial({
     fog: true,
-    uniforms: UniformsUtils.merge([UniformsLib.fog, {}]),
+    uniforms,
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
       varying vec3 vNormal;
@@ -157,7 +167,7 @@ function createLandMaterial(): ShaderMaterial {
       varying vec3 vWorld;
       varying vec3 vNormal;
       #include <fog_pars_fragment>
-      ${NOISE_GLSL}
+      ${NOISE_TEX_GLSL}
       ${LIGHT_GLSL}
       void main() {
         float y = vWorld.y;
@@ -171,8 +181,8 @@ function createLandMaterial(): ShaderMaterial {
         vec3 snow = vec3(0.92, 0.94, 1.0);
 
         // Grass with hard-edged copse patches and meadow patches.
-        float copse = fbm(vec3(vWorld.xz * 0.012, 3.0));
-        float light = fbm(vec3(vWorld.xz * 0.005 + 40.0, 7.0));
+        float copse = fbmTex(vWorld.xz * 0.012);
+        float light = fbmTexB(vWorld.xz * 0.005);
         vec3 col = grass;
         col = mix(col, meadow, smoothstep(0.55, 0.57, light));
         col = mix(col, grassDark, smoothstep(0.57, 0.59, copse));

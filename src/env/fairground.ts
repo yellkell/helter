@@ -24,7 +24,15 @@ import {
 } from '@iwsdk/core';
 
 import { PAINT } from '../constants.js';
-import { addOutline, LIGHT_GLSL, mulberry32, NOISE_GLSL, toon } from './fx.js';
+import {
+  addOutline,
+  LIGHT_GLSL,
+  mulberry32,
+  NOISE_GLSL,
+  NOISE_TEX_GLSL,
+  noiseUniform,
+  toon
+} from './fx.js';
 import { createStripeMaterial } from './tower.js';
 
 export interface FairgroundHandles {
@@ -103,24 +111,33 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   const rimInner = new Mesh(new TorusGeometry(wheelRadius - 6, 0.6, 8, 96), steel);
   addOutline(rim, 0.16);
   wheel.add(rim, rimInner);
+  // Spokes and gondolas are one instanced mesh each — the wheel used to be
+  // thirty-six separate draws a frame.
   const spokeGeo = new BoxGeometry(0.55, wheelRadius * 2, 0.55);
   const gondolaGeo = new BoxGeometry(5.2, 4.4, 4.4);
   const gondolaColors = [PAINT.red, PAINT.gold, PAINT.sea, PAINT.mint];
+  const wm = new Matrix4();
+  const wq = new Quaternion();
+  const wp = new Vector3();
+  const wOne = new Vector3(1, 1, 1);
+  const wColor = new Color();
+  const zAxis = new Vector3(0, 0, 1);
+  const spokes = new InstancedMesh(spokeGeo, steel, 12);
   for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI;
-    const spoke = new Mesh(spokeGeo, steel);
-    spoke.rotation.z = a;
-    wheel.add(spoke);
+    wq.setFromAxisAngle(zAxis, (i / 12) * Math.PI);
+    wm.compose(wp.set(0, 0, 0), wq, wOne);
+    spokes.setMatrixAt(i, wm);
   }
+  const gondolas = new InstancedMesh(gondolaGeo, toon({ color: 0xffffff }), 24);
+  wq.identity();
   for (let i = 0; i < 24; i++) {
     const a = (i / 24) * Math.PI * 2;
-    const gondola = new Mesh(
-      gondolaGeo,
-      toon({ color: gondolaColors[i % gondolaColors.length] })
-    );
-    gondola.position.set(Math.cos(a) * wheelRadius, Math.sin(a) * wheelRadius, 0);
-    wheel.add(gondola);
+    wm.compose(wp.set(Math.cos(a) * wheelRadius, Math.sin(a) * wheelRadius, 0), wq, wOne);
+    gondolas.setMatrixAt(i, wm);
+    wColor.setHex(gondolaColors[i % gondolaColors.length]);
+    gondolas.setColorAt(i, wColor);
   }
+  wheel.add(spokes, gondolas);
   wheelRoot.add(wheel);
   // Hub and A-frame legs.
   const hub = new Mesh(new CylinderGeometry(2.4, 2.4, 6.4, 16), toon({ color: PAINT.red }));
@@ -146,6 +163,8 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   const poleGeo = new CylinderGeometry(0.18, 0.22, poleHeight, 8);
   const flagColors = [PAINT.red, PAINT.gold, PAINT.sea, PAINT.cream, PAINT.mint];
   const flags = new InstancedMesh(new PlaneGeometry(1.0, 1.3), toon({ side: DoubleSide }), poleCount * 12);
+  const poles = new InstancedMesh(poleGeo, poleMat, poleCount);
+  const finials = new InstancedMesh(new SphereGeometry(0.45, 10, 8), toon({ color: PAINT.gold }), poleCount);
   const linePts: number[] = [];
   const m = new Matrix4();
   const q = new Quaternion();
@@ -156,12 +175,12 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   for (let i = 0; i < poleCount; i++) {
     const a0 = (i / poleCount) * Math.PI * 2;
     const a1 = ((i + 1) / poleCount) * Math.PI * 2;
-    const pole = new Mesh(poleGeo, poleMat);
-    pole.position.set(Math.cos(a0) * poleRadius, poleHeight / 2, Math.sin(a0) * poleRadius);
-    group.add(pole);
-    const finialBall = new Mesh(new SphereGeometry(0.45, 10, 8), toon({ color: PAINT.gold }));
-    finialBall.position.set(pole.position.x, poleHeight + 0.2, pole.position.z);
-    group.add(finialBall);
+    p.set(Math.cos(a0) * poleRadius, poleHeight / 2, Math.sin(a0) * poleRadius);
+    m.compose(p, q, one);
+    poles.setMatrixAt(i, m);
+    p.y = poleHeight + 0.2;
+    m.compose(p, q, one);
+    finials.setMatrixAt(i, m);
     // A sagging string of flags to the next pole.
     const x0 = Math.cos(a0) * poleRadius;
     const z0 = Math.sin(a0) * poleRadius;
@@ -194,7 +213,7 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     }
   }
   flags.count = f;
-  group.add(flags);
+  group.add(flags, poles, finials);
   const lineGeo = new BufferGeometry();
   lineGeo.setAttribute('position', new Float32BufferAttribute(linePts, 3));
   group.add(new LineSegments(lineGeo, new LineBasicMaterial({ color: 0x3a3330 })));
@@ -253,9 +272,11 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
 
 /** Warm sandstone flagstones with mortar lines and a little grime. */
 function createPavingMaterial(): ShaderMaterial {
+  const uniforms = UniformsUtils.merge([UniformsLib.fog, {}]);
+  uniforms.uNoise = noiseUniform();
   return new ShaderMaterial({
     fog: true,
-    uniforms: UniformsUtils.merge([UniformsLib.fog, {}]),
+    uniforms,
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
       #include <fog_pars_vertex>
@@ -271,6 +292,7 @@ function createPavingMaterial(): ShaderMaterial {
       varying vec3 vWorld;
       #include <fog_pars_fragment>
       ${NOISE_GLSL}
+      ${NOISE_TEX_GLSL}
       ${LIGHT_GLSL}
       void main() {
         vec2 p = vWorld.xz;
@@ -284,7 +306,7 @@ function createPavingMaterial(): ShaderMaterial {
         float line = 1.0 - smoothstep(0.0, 0.06, mortar);
         float tone = hash13(vec3(ring, floor(around), 1.0));
         vec3 stone = mix(vec3(0.40, 0.34, 0.27), vec3(0.50, 0.44, 0.35), step(0.5, tone));
-        stone *= 1.0 + (fbm(vWorld * 0.4) - 0.5) * 0.25;
+        stone *= 1.0 + (fbmTex(p * 0.4) - 0.5) * 0.25;
         vec3 albedo = mix(stone, vec3(0.2, 0.18, 0.16), line * 0.8);
         // A red ring marks the slide's exit run-out.
         float exitRing = 1.0 - smoothstep(0.35, 0.6, abs(r - 24.5));

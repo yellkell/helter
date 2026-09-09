@@ -10,6 +10,8 @@ import {
   Euler,
   Float32BufferAttribute,
   InstancedMesh,
+  LinearFilter,
+  LinearMipmapLinearFilter,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -152,40 +154,112 @@ export function makeTextTexture(
   return texture;
 }
 
-/** Shared GLSL: cheap value-noise + fbm used by the sky, sea, terrain, paint. */
+// ---------------------------------------------------------------------------
+// Baked noise. The painted shaders used to evaluate four octaves of value
+// noise per fragment — dozens of hash calls for every pixel of sky, sea and
+// land, which is most of the view in a headset. The same noise is now baked
+// once into a small tileable texture and read with one lookup.
+// ---------------------------------------------------------------------------
+
+const NOISE_SIZE = 256;
+/** Lattice cells per tile in the base octave of the baked fbm (R and G). */
+const FBM_CELLS = 4;
+/** Lattice cells per tile in the single-octave channels (B and A). */
+const NOISE_CELLS = 8;
+
+let noiseTexture: DataTexture | null = null;
+
+/**
+ * 256² RGBA noise that tiles seamlessly:
+ * R, G — two independent four-octave fbms (mean ≈ 0.47, the same
+ *        distribution as the old shader fbm, so its thresholds still hold);
+ * B, A — two independent single-octave value noises.
+ */
+export function getNoiseTexture(): DataTexture {
+  if (noiseTexture) return noiseTexture;
+  const size = NOISE_SIZE;
+  const data = new Uint8Array(size * size * 4);
+  const hash = (ix: number, iy: number, seed: number): number => {
+    const s = Math.sin(ix * 127.1 + iy * 311.7 + seed * 74.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  // Value noise on a lattice of `cells` per tile, wrapped so it tiles.
+  const vnoise = (u: number, v: number, cells: number, seed: number): number => {
+    const x = u * cells;
+    const y = v * cells;
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    let fx = x - ix;
+    let fy = y - iy;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    const x0 = ix % cells;
+    const y0 = iy % cells;
+    const x1 = (ix + 1) % cells;
+    const y1 = (iy + 1) % cells;
+    const a = hash(x0, y0, seed);
+    const b = hash(x1, y0, seed);
+    const c = hash(x0, y1, seed);
+    const d = hash(x1, y1, seed);
+    return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+  };
+  const fbm = (u: number, v: number, seed: number): number => {
+    let value = 0;
+    let amp = 0.5;
+    let cells = FBM_CELLS;
+    for (let o = 0; o < 4; o++) {
+      value += amp * vnoise(u, v, cells, seed + o * 13);
+      cells *= 2;
+      amp *= 0.5;
+    }
+    return value;
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const v = y / size;
+      const o = (y * size + x) * 4;
+      data[o] = Math.round(fbm(u, v, 1) * 255);
+      data[o + 1] = Math.round(fbm(u, v, 101) * 255);
+      data[o + 2] = Math.round(vnoise(u, v, NOISE_CELLS, 7) * 255);
+      data[o + 3] = Math.round(vnoise(u, v, NOISE_CELLS, 57) * 255);
+    }
+  }
+  noiseTexture = new DataTexture(data, size, size, RGBAFormat);
+  noiseTexture.wrapS = RepeatWrapping;
+  noiseTexture.wrapT = RepeatWrapping;
+  noiseTexture.magFilter = LinearFilter;
+  noiseTexture.minFilter = LinearMipmapLinearFilter;
+  noiseTexture.generateMipmaps = true;
+  noiseTexture.needsUpdate = true;
+  return noiseTexture;
+}
+
+/** The `uNoise` uniform. Add it after `UniformsUtils.merge`, which would clone the texture. */
+export function noiseUniform(): { value: DataTexture } {
+  return { value: getNoiseTexture() };
+}
+
+/**
+ * Shared GLSL: texture-backed noise. `fbmTex(p)` stands in for the old
+ * `fbm(vec3(p, k))` — one lattice cell per unit of `p`, same value range —
+ * and `noiseTex(p)` for a single `vnoise`. The B variants are independent
+ * patterns for when two layers must not line up.
+ */
+export const NOISE_TEX_GLSL = /* glsl */ `
+  uniform sampler2D uNoise;
+  float fbmTex(vec2 p) { return texture2D(uNoise, p * ${(1 / FBM_CELLS).toFixed(6)}).r; }
+  float fbmTexB(vec2 p) { return texture2D(uNoise, p * ${(1 / FBM_CELLS).toFixed(6)}).g; }
+  float noiseTex(vec2 p) { return texture2D(uNoise, p * ${(1 / NOISE_CELLS).toFixed(6)}).b; }
+  float noiseTexB(vec2 p) { return texture2D(uNoise, p * ${(1 / NOISE_CELLS).toFixed(6)}).a; }
+`;
+
+/** Shared GLSL: a cheap hash for per-cell variation (the paving uses it). */
 export const NOISE_GLSL = /* glsl */ `
   float hash13(vec3 p) {
     p = fract(p * 0.3183099 + 0.1);
     p *= 17.0;
     return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-  }
-  float vnoise(vec3 p) {
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float n000 = hash13(i);
-    float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
-    float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
-    float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
-    float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
-    float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
-    float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
-    float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
-    return mix(
-      mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-      mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
-      f.z
-    );
-  }
-  float fbm(vec3 p) {
-    float v = 0.0;
-    float a = 0.5;
-    for (int i = 0; i < 4; i++) {
-      v += a * vnoise(p);
-      p = p * 2.02 + vec3(13.7);
-      a *= 0.5;
-    }
-    return v;
   }
 `;
 

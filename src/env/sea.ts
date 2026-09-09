@@ -12,7 +12,7 @@ import {
 } from '@iwsdk/core';
 
 import { PAINT, SUN_DIR } from '../constants.js';
-import { addOutline, LIGHT_GLSL, NOISE_GLSL, toon } from './fx.js';
+import { addOutline, LIGHT_GLSL, NOISE_TEX_GLSL, noiseUniform, toon } from './fx.js';
 import { LAND_HEIGHT_GLSL } from './terrain.js';
 
 export interface SeaHandles {
@@ -72,10 +72,8 @@ export function createSea(): SeaHandles {
   const group = new Group();
   const uTime = { value: 0 };
 
-  const makeWaterMaterial = (displace: boolean, halfSpan: number): ShaderMaterial =>
-    new ShaderMaterial({
-    fog: true,
-    uniforms: UniformsUtils.merge([
+  const makeWaterMaterial = (displace: boolean, halfSpan: number): ShaderMaterial => {
+    const uniforms = UniformsUtils.merge([
       UniformsLib.fog,
       {
         uTime,
@@ -83,9 +81,14 @@ export function createSea(): SeaHandles {
         uDisplace: { value: displace ? 1 : 0 },
         uHalfSpan: { value: halfSpan }
       }
-    ]),
+    ]);
+    uniforms.uNoise = noiseUniform();
+    return new ShaderMaterial({
+    fog: true,
+    uniforms,
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
+      varying float vDepth;
       uniform float uTime;
       uniform float uDisplace;
       uniform float uHalfSpan;
@@ -94,14 +97,21 @@ export function createSea(): SeaHandles {
       ${WAVE_GLSL}
       void main() {
         vec4 wp = modelMatrix * vec4(position, 1.0);
+        // Water depth is found here, per vertex (the near plane's 10 m grid
+        // resolves the coast fine); the fragment shader only recomputes it
+        // exactly in the shallows, where the foam line needs it. The far
+        // plane is deep ocean everywhere it shows.
+        float depth = 30.0;
         // The near plane actually rides the swell. Amplitude tapers to zero
         // at its rim so it meets the flat far ocean without a seam, and in
         // the shallows so the water never pokes up through the beach.
         if (uDisplace > 0.5) {
+          depth = -landHeight(wp.xz);
           float edge = 1.0 - smoothstep(0.72, 0.98, max(abs(position.x), abs(position.y)) / uHalfSpan);
-          float shallow = smoothstep(0.5, 6.0, -landHeight(wp.xz));
+          float shallow = smoothstep(0.5, 6.0, depth);
           wp.y += waveHeight(wp.xz, uTime) * edge * shallow;
         }
+        vDepth = depth;
         vWorld = wp.xyz;
         vec4 mvPosition = viewMatrix * wp;
         gl_Position = projectionMatrix * mvPosition;
@@ -110,10 +120,11 @@ export function createSea(): SeaHandles {
     `,
     fragmentShader: /* glsl */ `
       varying vec3 vWorld;
+      varying float vDepth;
       uniform float uTime;
       uniform vec3 uSun;
       #include <fog_pars_fragment>
-      ${NOISE_GLSL}
+      ${NOISE_TEX_GLSL}
       ${LIGHT_GLSL}
       ${LAND_HEIGHT_GLSL}
       ${WAVE_GLSL}
@@ -121,7 +132,9 @@ export function createSea(): SeaHandles {
       void main() {
         vec2 p = vWorld.xz;
         float t = uTime;
-        float depth = -landHeight(p); // metres of water under this point
+        // Metres of water under this point: exact near the beach, where the
+        // colour bands and the foam edge live; interpolated out at sea.
+        float depth = vDepth < 16.0 ? -landHeight(p) : vDepth;
 
         // Flat colour bands by depth.
         vec3 shallow = vec3(0.22, 0.72, 0.68);
@@ -132,35 +145,35 @@ export function createSea(): SeaHandles {
         col = mix(col, shallow, 1.0 - smoothstep(2.6, 3.4, depth));
 
         // Surface normal from the same swell the near plane is displaced by,
-        // plus a little noise chop — so light and glints travel with the water.
+        // plus a little drifting noise chop — so light and glints travel
+        // with the water. (All the noise here is baked: one lookup each.)
         vec2 grad = waveGradient(p, t);
-        float chopE = 0.8;
-        float c0 = vnoise(vec3(p * 0.09, t * 0.25));
-        float cx = vnoise(vec3((p + vec2(chopE, 0.0)) * 0.09, t * 0.25));
-        float cz = vnoise(vec3((p + vec2(0.0, chopE)) * 0.09, t * 0.25));
+        vec2 cp = p * 0.09 + vec2(t * 0.02, t * 0.013);
+        float c0 = noiseTex(cp);
+        float cx = noiseTex(cp + vec2(0.072, 0.0));
+        float cz = noiseTex(cp + vec2(0.0, 0.072));
         vec3 n = normalize(vec3(-grad.x * 1.6 + (c0 - cx), 1.0, -grad.y * 1.6 + (c0 - cz)));
         vec3 viewDir = normalize(cameraPosition - vWorld);
         float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
         col = mix(col, vec3(0.60, 0.78, 0.94), fresnel * 0.3);
 
-        // Drifting crest streaks: thin white arcs, stretched along the shore.
-        // The noise domain is rotated and layered so nothing lines up on a grid.
         // Cartoon wave lines: thin wavy strokes running along the shore,
-        // warped by noise and broken into dashes so they never tile.
+        // warped by noise and broken into dashes so they never tile. The
+        // noise domain is rotated so nothing lines up on a grid.
         mat2 rot = mat2(0.96, -0.28, 0.28, 0.96);
         vec2 q = rot * p;
-        float warp = fbm(vec3(q * 0.02, t * 0.08)) * 9.0;
+        float warp = fbmTex(q * 0.02 + vec2(t * 0.004, 0.0)) * 9.0;
         float line = sin(q.y * 0.22 + warp - t * 1.2);
-        float dash = smoothstep(0.42, 0.5, fbm(vec3(q * 0.05 + 30.0, t * 0.12)));
+        float dash = smoothstep(0.42, 0.5, fbmTexB(q * 0.05 + vec2(t * 0.006, t * 0.0025)));
         float streak = smoothstep(0.90, 0.94, line) * dash;
         col = mix(col, vec3(0.93, 0.98, 1.0), streak * 0.75);
 
         // Foam: a lacy line where the water meets the sand, breathing in and
         // out, with scattered flecks through the shallows.
-        float lace = (vnoise(vec3(p * 0.16, t * 0.5)) - 0.5) * 1.8 + sin(t * 1.1 + p.x * 0.02) * 0.45;
+        float lace = (noiseTexB(p * 0.16 + vec2(t * 0.06, 0.0)) - 0.5) * 1.8 + sin(t * 1.1 + p.x * 0.02) * 0.45;
         float foamEdge = 1.3 + lace;
         float foam = 1.0 - smoothstep(foamEdge - 0.5, foamEdge, depth);
-        float flecks = smoothstep(0.56, 0.6, fbm(vec3(rot * p * 0.09, t * 0.3 + 9.0)));
+        float flecks = smoothstep(0.56, 0.6, fbmTexB(rot * p * 0.09 + vec2(9.0 + t * 0.03, 0.0)));
         foam = max(foam, flecks * (1.0 - smoothstep(3.0, 3.4, depth)) * 0.8);
         col = mix(col, vec3(0.97, 0.99, 1.0), foam);
 
@@ -178,7 +191,8 @@ export function createSea(): SeaHandles {
         #include <colorspace_fragment>
       }
     `
-  });
+    });
+  };
 
   // Far ocean: one flat plane out to the horizon (distant water reads flat).
   const far = new Mesh(new PlaneGeometry(9000, 9000, 1, 1), makeWaterMaterial(false, 4500));

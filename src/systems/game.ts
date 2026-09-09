@@ -38,6 +38,11 @@ export interface PanelEntities {
   warn: Entity;
 }
 
+type HudKey = 'tier' | 'coins' | 'big' | 'unit' | 'alt' | 'status';
+
+/** Seconds between refreshes of the fast-changing HUD readouts. */
+const HUD_REFRESH = 0.1;
+
 const SONGS_UNLOCKED_KEY = 'helter.songs-unlocked.v1';
 const SELECTED_SONG_KEY = 'helter.selected-song.v1';
 
@@ -94,6 +99,7 @@ export class GameSystem extends createSystem({
   private hudTier: UIKit.Text | null = null;
   private hudCoins: UIKit.Text | null = null;
   private hudBig: UIKit.Text | null = null;
+  private hudUnit: UIKit.Text | null = null;
   private hudAlt: UIKit.Text | null = null;
   private hudStatus: UIKit.Text | null = null;
   private warnText: UIKit.Text | null = null;
@@ -111,7 +117,13 @@ export class GameSystem extends createSystem({
   private songMenuOpen = false;
   private musicStartTimer: number | null = null;
 
-  private hudCache: Record<string, string> = {};
+  private hudCache: Partial<Record<HudKey, string>> = {};
+  /**
+   * The altitude and speed readouts change every frame on the slide; each
+   * text change re-lays-out the panel, which is real CPU on a headset. They
+   * refresh on this timer instead (about 10 Hz — still reads as live).
+   */
+  private hudTick = 0;
   private warnTimer = 0;
   private beepAt = 0;
   private started = false;
@@ -253,9 +265,31 @@ export class GameSystem extends createSystem({
       this.hudTier = doc.getElementById('tier-label') as UIKit.Text;
       this.hudCoins = doc.getElementById('coin-label') as UIKit.Text;
       this.hudBig = doc.getElementById('big-label') as UIKit.Text;
+      this.hudUnit = doc.getElementById('unit-label') as UIKit.Text;
       this.hudAlt = doc.getElementById('alt-label') as UIKit.Text;
       this.hudStatus = doc.getElementById('status-label') as UIKit.Text;
+      // Anything the game wrote before the document was ready lands now.
+      (Object.keys(this.hudCache) as HudKey[]).forEach((key) => {
+        this.hudElement(key)?.setProperties({ text: this.hudCache[key] });
+      });
     });
+  }
+
+  private hudElement(key: HudKey): UIKit.Text | null {
+    switch (key) {
+      case 'tier':
+        return this.hudTier;
+      case 'coins':
+        return this.hudCoins;
+      case 'big':
+        return this.hudBig;
+      case 'unit':
+        return this.hudUnit;
+      case 'alt':
+        return this.hudAlt;
+      default:
+        return this.hudStatus;
+    }
   }
 
   private wireEndPanel(): void {
@@ -294,15 +328,6 @@ export class GameSystem extends createSystem({
       if (!doc) return;
       this.warnText = doc.getElementById('warn-text') as UIKit.Text;
     });
-  }
-
-  private setPanelVisible(entity: Entity | undefined, visible: boolean): void {
-    if (!entity) return;
-    if (entity.object3D) entity.object3D.visible = visible;
-    // ScreenSpace can re-parent the UIKit document out of our object3D,
-    // so toggle the document group too.
-    const doc = this.getDocument(entity);
-    if (doc) doc.visible = visible;
   }
 
   /** Force a menu panel to draw on top of the world. */
@@ -355,50 +380,49 @@ export class GameSystem extends createSystem({
     return this.visibilityState.value === VisibilityState.NonImmersive ? vr - 0.75 : vr;
   }
 
-  /** Same idea for the HUD: above the eyeline in VR, top of the screen on desktop. */
-  private layoutHud(): void {
+  /**
+   * The HUD is never hidden, only parked: above the eyeline in VR, top of
+   * the screen on desktop, or far below the world when there is no ride on.
+   * (A panel that was invisible from boot came up blank the first time it
+   * was shown in the headset; one that has been drawing all along does not.)
+   */
+  private setHudShown(shown: boolean): void {
     const hud = this.panels?.hud?.object3D;
     if (!hud) return;
     const desktop = this.visibilityState.value === VisibilityState.NonImmersive;
-    hud.position.set(0, desktop ? 0.95 : 2.45, -3.6);
+    hud.position.set(0, shown ? (desktop ? 0.95 : 2.45) : -9999, -3.6);
     hud.rotation.x = desktop ? -0.35 : 0.14;
-    this.layoutWarn();
   }
 
   /**
-   * The warning banner sits well clear of the HUD. It used to be pinned at
-   * y 1.05 while the desktop HUD sat at 0.95 a metre further out, so "GO!"
-   * and "FINAL DROP" landed straight on top of the readout and neither
-   * could be read.
+   * The warning banner sits clear of the HUD: below it on desktop (mid
+   * screen, where the camera looks), above the eyeline's readout in VR. It
+   * has to stay above the rig's floor — parked at -0.55 it was under the
+   * slide bed on the flat bays, exactly when "HOLD ON" and "GO!" show, and
+   * the bed hid it. Parked far below the world when not showing.
    */
-  private layoutWarn(): void {
+  private setWarnShown(shown: boolean): void {
     const warn = this.panels?.warn?.object3D;
     if (!warn) return;
     const desktop = this.visibilityState.value === VisibilityState.NonImmersive;
-    warn.position.set(0, desktop ? -0.55 : 1.15, -2.6);
+    warn.position.set(0, shown ? (desktop ? 0.35 : 1.15) : -9999, -2.6);
     warn.rotation.x = desktop ? 0.3 : -0.18;
   }
 
-  private setHud(key: 'tier' | 'coins' | 'big' | 'alt' | 'status', value: string): void {
+  /**
+   * Write a HUD readout. The value is remembered even when the document has
+   * not loaded yet, and replayed once it has — so nothing written early is
+   * lost, and nothing unchanged is re-laid-out.
+   */
+  private setHud(key: HudKey, value: string): void {
     if (this.hudCache[key] === value) return;
     this.hudCache[key] = value;
-    const el =
-      key === 'tier'
-        ? this.hudTier
-        : key === 'coins'
-          ? this.hudCoins
-        : key === 'big'
-          ? this.hudBig
-          : key === 'alt'
-            ? this.hudAlt
-            : this.hudStatus;
-    el?.setProperties({ text: value });
+    this.hudElement(key)?.setProperties({ text: value });
   }
 
   private showWarning(text: string, seconds: number): void {
-    this.layoutWarn(); // in case the session flipped between desktop and VR
     this.warnText?.setProperties({ text });
-    this.setPanelVisible(this.panels?.warn, true);
+    this.setWarnShown(true); // re-placed each time, in case the session flipped between desktop and VR
     this.warnTimer = seconds;
   }
 
@@ -424,8 +448,9 @@ export class GameSystem extends createSystem({
     this.applySongMenu();
     this.setStartPanelShown(false);
     this.startRunAudio();
-    this.layoutHud();
-    this.setPanelVisible(this.panels?.hud, true);
+    this.hudCache = {};
+    this.hudTick = 0;
+    this.setHudShown(true);
     this.setPointersVisible(false);
     emit('game-start');
     this.buildCourse();
@@ -448,10 +473,10 @@ export class GameSystem extends createSystem({
     this.buildCourse();
     this.setEndPanelShown(false);
     this.winWait = 0;
-    this.layoutHud();
-    this.setPanelVisible(this.panels?.hud, true);
-    this.setPointersVisible(false);
     this.hudCache = {};
+    this.hudTick = 0;
+    this.setHudShown(true);
+    this.setPointersVisible(false);
     this.startRunAudio();
     this.enterLanding(LANDING_HOLD + 0.8);
   }
@@ -464,10 +489,9 @@ export class GameSystem extends createSystem({
     this.env?.confetti.stop();
     this.world.getSystem(SlideSystem)?.placeAtStart();
     this.setEndPanelShown(false);
-    this.setPanelVisible(this.panels?.hud, false);
-    this.setPanelVisible(this.panels?.warn, false);
+    this.setHudShown(false);
+    this.setWarnShown(false);
     this.winWait = 0;
-    this.hudCache = {};
     this.songMenuOpen = false;
     this.started = false;
     if (this.musicStartTimer !== null) {
@@ -524,8 +548,8 @@ export class GameSystem extends createSystem({
     this.endStats?.setProperties({
       text: `${TOTAL_DESCENT}M DOWN   -   ${this.formatTime(game.runTime)}   -   ${game.coins}/${game.coinsTotal} COINS`
     });
-    this.setPanelVisible(this.panels?.hud, false);
-    this.setPanelVisible(this.panels?.warn, false);
+    this.setHudShown(false);
+    this.setWarnShown(false);
 
     // Let the landing breathe — confetti gets a few seconds before the panel.
     this.winWait = 3.2;
@@ -550,8 +574,8 @@ export class GameSystem extends createSystem({
     this.endStats?.setProperties({
       text: `TIER ${game.tier}/${TOTAL_TIERS}   -   ALT ${altitude}M   -   ${game.coins} COINS   -   ${this.formatTime(game.runTime)}`
     });
-    this.setPanelVisible(this.panels?.hud, false);
-    this.setPanelVisible(this.panels?.warn, false);
+    this.setHudShown(false);
+    this.setWarnShown(false);
     this.setEndPanelShown(true);
     this.setPointersVisible(true);
     this.endArm = 0;
@@ -606,18 +630,24 @@ export class GameSystem extends createSystem({
 
     if (this.warnTimer > 0) {
       this.warnTimer -= delta;
-      if (this.warnTimer <= 0) this.setPanelVisible(this.panels?.warn, false);
+      if (this.warnTimer <= 0) this.setWarnShown(false);
     }
 
-    const alt = Math.max(0, Math.round(this.player.position.y - GROUND_LANDING_Y));
-    this.setHud('alt', `ALT ${alt}M`);
+    // Coins and tier change rarely; altitude and speed are throttled.
     this.setHud('tier', game.tier >= TOTAL_TIERS ? 'FINAL TIER' : `TIER ${game.tier}/${TOTAL_TIERS}`);
     this.setHud('coins', `COINS ${game.coins}`);
+    this.hudTick -= delta;
+    const refresh = this.hudTick <= 0;
+    if (refresh) {
+      this.hudTick = HUD_REFRESH;
+      const alt = Math.max(0, Math.round(this.player.position.y - GROUND_LANDING_Y));
+      this.setHud('alt', `ALT ${alt}M`);
+    }
 
     if (game.phase === 'LANDING') {
       this.updateLanding(delta);
     } else if (game.phase === 'SLIDE') {
-      this.updateSlide();
+      this.updateSlide(refresh);
     }
   }
 
@@ -625,7 +655,8 @@ export class GameSystem extends createSystem({
     game.holdRemaining -= delta;
     const remaining = Math.max(0, game.holdRemaining);
     this.setHud('big', Math.ceil(remaining).toFixed(0));
-    this.setHud('status', game.tier === 1 ? 'GRAB THE RAIL - LOOK DOWN THE SLIDE' : 'CATCH YOUR BREATH');
+    this.setHud('unit', ' ');
+    this.setHud('status', game.tier === 1 ? 'GRAB THE RAIL - FACE DOWNHILL' : 'CATCH YOUR BREATH');
     if (remaining <= this.beepAt && this.beepAt > 0) {
       // DOWN's voiced count: THREE... TWO... ONE... then the launch.
       const cue = this.beepAt === 3 ? 'three' : this.beepAt === 2 ? 'two' : 'one';
@@ -635,8 +666,11 @@ export class GameSystem extends createSystem({
     if (remaining <= 0) this.enterSlide();
   }
 
-  private updateSlide(): void {
-    this.setHud('big', `${Math.round(game.slideSpeed * 3.6)} KM/H`);
+  private updateSlide(refresh: boolean): void {
+    // Number and unit live in separate fixed boxes, so the readout racing
+    // up from 0 on launch never reflows the panel.
+    if (refresh) this.setHud('big', Math.round(game.slideSpeed * 3.6).toFixed(0));
+    this.setHud('unit', 'KM/H');
     this.setHud('status', 'LEAN BETWEEN THE GATES');
 
     const slide = this.world.getSystem(SlideSystem);

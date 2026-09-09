@@ -1,4 +1,4 @@
-import { createSystem, Group, Vector3 } from '@iwsdk/core';
+import { createSystem, Group, Object3D, Vector3 } from '@iwsdk/core';
 
 import {
   BARRIER_SPACING,
@@ -7,7 +7,7 @@ import {
   SLIDE_ACCEL_TIME,
   SLIDE_SPEED
 } from '../constants.js';
-import { createGate } from '../env/track.js';
+import { createGateBatch, type GatePlacement } from '../env/track.js';
 import { HelterPath, helterPath, type PathSample } from '../ride/path.js';
 import { emit, game, on } from '../state.js';
 
@@ -23,7 +23,8 @@ const PATTERNS: ReadonlyArray<ReadonlyArray<ReadonlyArray<number>>> = [
 ];
 
 export interface Gate {
-  group: Group;
+  /** The board's frame (transform only — the visuals are batched). */
+  group: Object3D;
   /** Arc-length position along the slide. */
   s: number;
   tier: number;
@@ -103,6 +104,7 @@ export class SlideSystem extends createSystem({}) {
   /** Stand up every gate on every tier. */
   buildCourse(): void {
     this.clearGates();
+    const placements: GatePlacement[] = [];
     helterPath.tiers.forEach((tier, i) => {
       const spacing = BARRIER_SPACING[Math.min(i, BARRIER_SPACING.length - 1)];
       const pattern = PATTERNS[Math.min(i, PATTERNS.length - 1)];
@@ -115,24 +117,30 @@ export class SlideSystem extends createSystem({}) {
         const lanes = pattern[k % pattern.length];
         const color = GATE_COLORS[Math.floor(Math.random() * GATE_COLORS.length)];
         for (const lane of lanes) {
-          this.gates.push({ group: this.spawnGate(s, LANE_X[lane], color), s, tier: i, lane });
+          const frame = this.spawnGate(s, LANE_X[lane]);
+          placements.push({ matrix: frame.matrix.clone(), color });
+          this.gates.push({ group: frame, s, tier: i, lane });
         }
       }
     });
+    this.course.add(createGateBatch(placements));
   }
 
-  private spawnGate(s: number, lateral: number, color: number): Group {
+  /** The gate's frame on the slide: stays in the scene so its world matrix
+   * is kept current for the collision test. */
+  private spawnGate(s: number, lateral: number): Object3D {
     const sample = helterPath.sample(s, HelterPath.makeSample());
-    const gate = createGate(color);
+    const gate = new Object3D();
     gate.position.copy(sample.position).addScaledVector(sample.right, lateral);
     gate.position.y += 1.3; // board is centred; stand it on the bed
     gate.rotation.y = sample.yaw;
+    gate.updateMatrix();
     this.course.add(gate);
     return gate;
   }
 
   private clearGates(): void {
-    this.gates.forEach((g) => g.group.removeFromParent());
+    this.course.clear();
     this.gates = [];
   }
 

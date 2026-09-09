@@ -10,7 +10,7 @@ import {
 } from '@iwsdk/core';
 
 import { SUN_DIR } from '../constants.js';
-import { makeGlow, NOISE_GLSL } from './fx.js';
+import { makeGlow, NOISE_TEX_GLSL, noiseUniform } from './fx.js';
 
 export interface SkyHandles {
   group: Group;
@@ -30,7 +30,7 @@ export function createSky(): SkyHandles {
   const material = new ShaderMaterial({
     side: BackSide,
     depthWrite: false,
-    uniforms: { uTime, uSun: { value: sun } },
+    uniforms: { uTime, uSun: { value: sun }, uNoise: noiseUniform() },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
       void main() {
@@ -43,7 +43,7 @@ export function createSky(): SkyHandles {
       varying vec3 vDir;
       uniform float uTime;
       uniform vec3 uSun;
-      ${NOISE_GLSL}
+      ${NOISE_TEX_GLSL}
       void main() {
         vec3 d = normalize(vDir);
         float up = clamp(d.y, -1.0, 1.0);
@@ -62,13 +62,15 @@ export function createSky(): SkyHandles {
         col = mix(col, vec3(1.0, 0.97, 0.80), smoothstep(0.99880, 0.99905, sunDot));
 
         // Puffy hard-edged clouds: one threshold for the body, a second
-        // sample nudged toward the ground for a shaded underside.
+        // sample nudged toward the ground for a shaded underside. Two
+        // lookups into the baked noise (it mipmaps, so the horizon, where
+        // the projection squeezes, no longer shimmers either).
         if (d.y > 0.01) {
           vec2 p = d.xz / (d.y + 0.08) * 1.6;
           p += vec2(uTime * 0.006, uTime * 0.002);
-          float n = fbm(vec3(p * 0.9, 3.0));
+          float n = fbmTex(p * 0.9);
           float body = smoothstep(0.545, 0.565, n);
-          float n2 = fbm(vec3((p + vec2(0.0, 0.10)) * 0.9, 3.0));
+          float n2 = fbmTex((p + vec2(0.0, 0.10)) * 0.9);
           float lit = smoothstep(0.565, 0.585, n2);
           vec3 cloudCol = mix(vec3(0.76, 0.84, 0.95), vec3(1.0), lit);
           cloudCol += vec3(1.0, 0.9, 0.7) * pow(sunDot, 3.0) * 0.12;

@@ -30,7 +30,7 @@ import {
   TRACK_WIDTH
 } from '../constants.js';
 import { helterPath } from '../ride/path.js';
-import { addOutline, LIGHT_GLSL, makeGlow, NOISE_GLSL, toon } from './fx.js';
+import { addOutline, LIGHT_GLSL, makeGlow, NOISE_TEX_GLSL, noiseUniform, toon } from './fx.js';
 
 export interface TowerHandles {
   group: Group;
@@ -49,19 +49,21 @@ export function createStripeMaterial(opts: {
   twist?: number;
   wear?: number;
 }): ShaderMaterial {
+  const uniforms = UniformsUtils.merge([
+    UniformsLib.fog,
+    {
+      uColorA: { value: new Color(opts.colorA) },
+      uColorB: { value: new Color(opts.colorB) },
+      uStripes: { value: opts.stripes },
+      uTwist: { value: opts.twist ?? 0 },
+      uWear: { value: opts.wear ?? 0.08 }
+    }
+  ]);
+  uniforms.uNoise = noiseUniform();
   return new ShaderMaterial({
     fog: true,
     side: DoubleSide,
-    uniforms: UniformsUtils.merge([
-      UniformsLib.fog,
-      {
-        uColorA: { value: new Color(opts.colorA) },
-        uColorB: { value: new Color(opts.colorB) },
-        uStripes: { value: opts.stripes },
-        uTwist: { value: opts.twist ?? 0 },
-        uWear: { value: opts.wear ?? 0.08 }
-      }
-    ]),
+    uniforms,
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
       varying vec3 vNormal;
@@ -87,7 +89,7 @@ export function createStripeMaterial(opts: {
       uniform float uTwist;
       uniform float uWear;
       #include <fog_pars_fragment>
-      ${NOISE_GLSL}
+      ${NOISE_TEX_GLSL}
       ${LIGHT_GLSL}
       void main() {
         float angle = atan(vLocal.z, vLocal.x) / 6.2831853;
@@ -96,8 +98,9 @@ export function createStripeMaterial(opts: {
         float w = fwidth(band) * 1.5;
         float mixv = smoothstep(0.5 - w, 0.5 + w, band) * (1.0 - smoothstep(1.0 - w, 1.0, band));
         vec3 albedo = mix(uColorA, uColorB, mixv);
-        // Weathering: sun-bleached patches and grime streaks.
-        float wear = fbm(vWorld * 0.35) - 0.5;
+        // Weathering: sun-bleached patches and grime streaks (one lookup,
+        // wrapped around the drum by a skewed projection).
+        float wear = fbmTex(vec2(vWorld.x * 0.7 + vWorld.z * 0.4, vWorld.y * 0.9) * 0.35) - 0.5;
         albedo *= 1.0 + wear * uWear * 2.0;
         vec3 n = normalize(vNormal);
         if (!gl_FrontFacing) n = -n;

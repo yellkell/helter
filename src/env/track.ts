@@ -36,7 +36,14 @@ import {
   TRACK_WIDTH
 } from '../constants.js';
 import { HelterPath, type PathSample } from '../ride/path.js';
-import { LIGHT_GLSL, makeStripeTexture, makeTextTexture, NOISE_GLSL, toon } from './fx.js';
+import {
+  LIGHT_GLSL,
+  makeStripeTexture,
+  makeTextTexture,
+  NOISE_TEX_GLSL,
+  noiseUniform,
+  toon
+} from './fx.js';
 
 export interface TrackHandles {
   group: Group;
@@ -90,10 +97,12 @@ function buildStrip(
 
 /** Painted slide bed: cream boards, red lane lines, gold arrows flowing downhill. */
 function createBedMaterial(uTime: { value: number }): ShaderMaterial {
+  const uniforms = UniformsUtils.merge([UniformsLib.fog, { uTime, uWidth: { value: TRACK_WIDTH } }]);
+  uniforms.uNoise = noiseUniform();
   return new ShaderMaterial({
     fog: true,
     side: DoubleSide,
-    uniforms: UniformsUtils.merge([UniformsLib.fog, { uTime, uWidth: { value: TRACK_WIDTH } }]),
+    uniforms,
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
       varying vec3 vNormal;
@@ -116,7 +125,7 @@ function createBedMaterial(uTime: { value: number }): ShaderMaterial {
       uniform float uTime;
       uniform float uWidth;
       #include <fog_pars_fragment>
-      ${NOISE_GLSL}
+      ${NOISE_TEX_GLSL}
       ${LIGHT_GLSL}
 
       float lineAt(float x, float target, float width) {
@@ -135,7 +144,7 @@ function createBedMaterial(uTime: { value: number }): ShaderMaterial {
 
         // Painted boards: faint plank seams every 0.4m along, wood grain.
         vec3 albedo = cream;
-        float grain = fbm(vec3(x * 9.0, s * 0.9, 1.0)) - 0.5;
+        float grain = fbmTex(vec2(x * 9.0, s * 0.9)) - 0.5;
         albedo *= 1.0 + grain * 0.04;
         float seam = 1.0 - lineAt(fract(s / 0.4) * 0.4, 0.2, 0.006) * 0.35;
         albedo *= seam;
@@ -384,34 +393,71 @@ let gateEdges: EdgesGeometry | null = null;
 let gateEdgeMaterial: LineBasicMaterial | null = null;
 const gateMaterials = new Map<number, MeshToonMaterial>();
 let pennantGeometry: ConeGeometry | null = null;
+let pennantMaterial: MeshToonMaterial | null = null;
 
 function toHex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
 }
 
+/** Where a gate stands: its world matrix (board centred on the origin) and paint. */
+export interface GatePlacement {
+  matrix: Matrix4;
+  color: number;
+}
+
 /**
- * A candy-striped board with a pennant on top, exactly the size DOWN's
- * collision test expects. Lean past it or you're off the ride.
+ * Every gate on the course in a handful of draw calls: candy-striped boards
+ * instanced per colour, all the pennants in one mesh, and all the ink edges
+ * in one line set. Each board is exactly the size DOWN's collision test
+ * expects — lean past it or you're off the ride. (Seventy gates as separate
+ * board + edges + pennant objects were two hundred draw calls a frame.)
  */
-export function createGate(color: number): Group {
+export function createGateBatch(placements: GatePlacement[]): Group {
   gateGeometry ??= new BoxGeometry(BARRIER_SIZE.w, BARRIER_SIZE.h, BARRIER_SIZE.d);
   pennantGeometry ??= new ConeGeometry(0.16, 0.5, 4);
-  let material = gateMaterials.get(color);
-  if (!material) {
-    material = toon({ map: makeStripeTexture(toHex(color), '#fff4e0', 6) });
-    gateMaterials.set(color, material);
-  }
-  const group = new Group();
-  const board = new Mesh(gateGeometry, material);
-  group.add(board);
+  pennantMaterial ??= toon({ color: PAINT.gold });
   // Ink edges drawn as lines: the same crisp frame from every angle, unlike
   // a pushed-out hull, which fattens edge-on and vanishes face-on.
   gateEdges ??= new EdgesGeometry(gateGeometry);
   gateEdgeMaterial ??= new LineBasicMaterial({ color: PAINT.ink });
-  group.add(new LineSegments(gateEdges, gateEdgeMaterial));
-  const pennant = new Mesh(pennantGeometry, toon({ color: PAINT.gold }));
-  pennant.position.y = BARRIER_SIZE.h / 2 + 0.25;
-  group.add(pennant);
+
+  const group = new Group();
+  const byColor = new Map<number, GatePlacement[]>();
+  for (const p of placements) {
+    let list = byColor.get(p.color);
+    if (!list) byColor.set(p.color, (list = []));
+    list.push(p);
+  }
+  byColor.forEach((list, color) => {
+    let material = gateMaterials.get(color);
+    if (!material) {
+      material = toon({ map: makeStripeTexture(toHex(color), '#fff4e0', 6) });
+      gateMaterials.set(color, material);
+    }
+    const boards = new InstancedMesh(gateGeometry!, material, list.length);
+    list.forEach((p, i) => boards.setMatrixAt(i, p.matrix));
+    group.add(boards);
+  });
+
+  const pennants = new InstancedMesh(pennantGeometry, pennantMaterial, placements.length);
+  const lift = new Matrix4().makeTranslation(0, BARRIER_SIZE.h / 2 + 0.25, 0);
+  const m = new Matrix4();
+  placements.forEach((p, i) => pennants.setMatrixAt(i, m.multiplyMatrices(p.matrix, lift)));
+  group.add(pennants);
+
+  const edgeSource = gateEdges.attributes.position;
+  const edgePositions = new Float32Array(edgeSource.count * 3 * placements.length);
+  const v = new Vector3();
+  placements.forEach((p, k) => {
+    const base = k * edgeSource.count * 3;
+    for (let i = 0; i < edgeSource.count; i++) {
+      v.fromBufferAttribute(edgeSource, i).applyMatrix4(p.matrix);
+      v.toArray(edgePositions, base + i * 3);
+    }
+  });
+  const edgeGeometry = new BufferGeometry();
+  edgeGeometry.setAttribute('position', new Float32BufferAttribute(edgePositions, 3));
+  group.add(new LineSegments(edgeGeometry, gateEdgeMaterial));
   return group;
 }
 

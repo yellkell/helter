@@ -1,20 +1,18 @@
 import {
-  AdditiveBlending,
+  BufferGeometry,
   Color,
   createSystem,
-  CylinderGeometry,
   DynamicDrawUsage,
+  Float32BufferAttribute,
   InstancedMesh,
   Matrix4,
   Mesh,
   Object3D,
   OctahedronGeometry,
-  PlaneGeometry,
   Quaternion,
   ShaderMaterial,
   Sprite,
   SpriteMaterial,
-  TorusGeometry,
   UniformsLib,
   UniformsUtils,
   Vector3
@@ -39,6 +37,9 @@ const GATE_CLEARANCE = 3.2;
 const GEM_VALUE = 5;
 const MAX_COINS = 480;
 const MAX_GEMS = 12;
+const COIN_RADIUS = 0.27;
+/** Only pickups within this many metres of the rig spin and bob. */
+const NEAR = 80;
 
 interface Pickup {
   s: number;
@@ -51,6 +52,8 @@ interface Pickup {
   taken: boolean;
   /** Instance slot in its mesh. */
   index: number;
+  /** Was animated last frame — so it gets one final static write on leaving the window. */
+  near: boolean;
 }
 
 interface Pop {
@@ -80,6 +83,9 @@ interface Label {
 const FLY_TIME = 0.5;
 const SPARK_LIFE = 0.5;
 const LABEL_LIFE = 0.75;
+/** Where a taken coin's celebration starts, in the rig's own frame: just
+ * ahead of the eyes, so it's seen at 16 m/s instead of left behind. */
+const FX_ORIGIN = new Vector3(0, 1.3, -2.4);
 
 /**
  * Subway Surfers on a slide: strings of spinning coins laid through the
@@ -91,9 +97,6 @@ const LABEL_LIFE = 0.75;
 export class CoinSystem extends createSystem({}) {
   private coins!: InstancedMesh;
   private gems!: InstancedMesh;
-  private coinRims!: InstancedMesh;
-  private coinHalos!: InstancedMesh;
-  private gemHalos!: InstancedMesh;
   private uTime = { value: 0 };
   private pickups: Pickup[] = [];
   private pops: Pop[] = [];
@@ -103,7 +106,6 @@ export class CoinSystem extends createSystem({}) {
   private labels: Label[] = [];
   private labelMaterials!: { coin: SpriteMaterial; gem: SpriteMaterial };
   private flyTarget = new Vector3();
-  private rigForward = new Vector3();
   private scratch = new Vector3();
   private streak = 0;
   private streakTimer = 0;
@@ -115,74 +117,55 @@ export class CoinSystem extends createSystem({}) {
   private yAxis = new Vector3(0, 1, 0);
 
   init(): void {
-    // A coin stood on edge, face toward the rider: cylinder axis along Z.
-    const coinGeo = new CylinderGeometry(0.27, 0.27, 0.07, 22);
-    coinGeo.rotateX(Math.PI / 2);
-    // Self-lit, saturated, with a cartoon glint: never mustard in the shade.
+    // One bevelled disc per coin, stood on edge with its face toward the
+    // rider: the raised rim and the bevels are real geometry so the coin
+    // keeps a crisp shape from every angle, in a few hundred triangles.
+    const coinGeo = makeCoinGeometry(COIN_RADIUS, 24);
     const coinMaterial = createPickupMaterial(this.uTime, {
-      mode: 0,
-      face: 0xffcf1f,
-      edge: 0xf28f14,
-      radius: 0.27
+      gem: false,
+      face: 0xffd23f,
+      edge: 0xf5a623,
+      dark: 0xd4790f,
+      radius: COIN_RADIUS
     });
-    const rimMaterial = createPickupMaterial(this.uTime, {
-      mode: 1,
-      face: 0xf0861a,
-      edge: 0xf0861a,
-      radius: 0.27
-    });
-    const gemMaterial = createPickupMaterial(this.uTime, {
-      mode: 2,
-      face: 0x8dffd8,
-      edge: 0x18b58e,
-      radius: 0.3
-    });
-    const coinHaloMaterial = createHaloMaterial(this.uTime, 0xffc63a, 1.5);
-    const gemHaloMaterial = createHaloMaterial(this.uTime, 0x8dffd8, 1.7);
-    this.coins = new InstancedMesh(coinGeo, coinMaterial, MAX_COINS);
-    // A darker gold rim, real geometry, so the coin keeps its edge from any
-    // angle — a pushed-out ink hull only ever showed at the silhouette.
-    const rimGeo = new TorusGeometry(0.265, 0.045, 8, 28);
-    this.coinRims = new InstancedMesh(rimGeo, rimMaterial, MAX_COINS);
-    this.coinRims.instanceMatrix = this.coins.instanceMatrix;
     const gemGeo = new OctahedronGeometry(0.26);
     gemGeo.scale(0.8, 1.25, 0.8);
+    const gemMaterial = createPickupMaterial(this.uTime, {
+      gem: true,
+      face: 0xa6ffe4,
+      edge: 0x22c49a,
+      dark: 0x0f8f6a,
+      radius: 0.3
+    });
+    this.coins = new InstancedMesh(coinGeo, coinMaterial, MAX_COINS);
     this.gems = new InstancedMesh(gemGeo, gemMaterial, MAX_GEMS);
-    // Soft glow behind every pickup: camera-facing quads sharing the matrices.
-    const haloGeo = new PlaneGeometry(1, 1);
-    this.coinHalos = new InstancedMesh(haloGeo, coinHaloMaterial, MAX_COINS);
-    this.coinHalos.instanceMatrix = this.coins.instanceMatrix;
-    this.gemHalos = new InstancedMesh(haloGeo, gemHaloMaterial, MAX_GEMS);
-    this.gemHalos.instanceMatrix = this.gems.instanceMatrix;
-    for (const mesh of [this.coins, this.coinRims, this.gems, this.coinHalos, this.gemHalos]) {
+    for (const mesh of [this.coins, this.gems]) {
       mesh.instanceMatrix.setUsage(DynamicDrawUsage);
       mesh.frustumCulled = false;
       mesh.count = 0;
       this.scene.add(mesh);
     }
-    this.coinHalos.renderOrder = 5;
-    this.gemHalos.renderOrder = 5;
 
-    // Flyers: the coin you just took, spinning up toward the counter.
+    // Everything that happens when you take a coin rides with the rig, so
+    // it plays out in front of your eyes rather than behind you.
     for (let i = 0; i < 10; i++) {
       const mesh = new Mesh(coinGeo, coinMaterial);
-      mesh.add(new Mesh(rimGeo, rimMaterial));
       mesh.visible = false;
-      this.scene.add(mesh);
+      this.player.add(mesh);
       this.flyers.push({ mesh, from: new Vector3(), t: 0, active: false });
     }
     for (let i = 0; i < 3; i++) {
       const mesh = new Mesh(gemGeo, gemMaterial);
       mesh.visible = false;
-      this.scene.add(mesh);
+      this.player.add(mesh);
       this.gemFlyers.push({ mesh, from: new Vector3(), t: 0, active: false });
     }
 
     // Sparkles that burst out of a pickup.
-    for (let i = 0; i < 42; i++) {
+    for (let i = 0; i < 36; i++) {
       const sprite = makeGlow(0xfff3b8, 0.22, 0);
       sprite.visible = false;
-      this.scene.add(sprite);
+      this.player.add(sprite);
       this.sparks.push({ sprite, velocity: new Vector3(), life: 0 });
     }
 
@@ -198,7 +181,7 @@ export class CoinSystem extends createSystem({}) {
       const sprite = new Sprite(this.labelMaterials.coin.clone());
       sprite.scale.set(0.7, 0.35, 1);
       sprite.visible = false;
-      this.scene.add(sprite);
+      this.player.add(sprite);
       this.labels.push({ sprite, life: 0 });
     }
 
@@ -206,7 +189,7 @@ export class CoinSystem extends createSystem({}) {
     for (let i = 0; i < 8; i++) {
       const sprite = makeGlow(0xfff0a8, 1, 0);
       sprite.visible = false;
-      this.scene.add(sprite);
+      this.player.add(sprite);
       this.pops.push({ sprite, life: 0 });
     }
 
@@ -219,12 +202,13 @@ export class CoinSystem extends createSystem({}) {
   private clear(): void {
     this.pickups = [];
     this.coins.count = 0;
-    this.coinRims.count = 0;
-    this.coinHalos.count = 0;
     this.gems.count = 0;
-    this.gemHalos.count = 0;
     this.streak = 0;
-    for (const f of [...this.flyers, ...this.gemFlyers]) {
+    for (const f of this.flyers) {
+      f.active = false;
+      f.mesh.visible = false;
+    }
+    for (const f of this.gemFlyers) {
       f.active = false;
       f.mesh.visible = false;
     }
@@ -236,10 +220,10 @@ export class CoinSystem extends createSystem({}) {
       l.life = 0;
       l.sprite.visible = false;
     }
-    this.pops.forEach((p) => {
+    for (const p of this.pops) {
       p.life = 0;
       p.sprite.visible = false;
-    });
+    }
   }
 
   /**
@@ -292,7 +276,7 @@ export class CoinSystem extends createSystem({}) {
 
         for (let i = 0; i < run; i++) {
           const lane = i < run / 2 ? laneA : laneB;
-          if (this.pickups.length - this.gems.count >= MAX_COINS) break;
+          if (this.coins.count >= MAX_COINS) break;
           this.place(s + i * COIN_STEP, lane, false);
         }
         s += length + 5 + Math.random() * 9;
@@ -312,10 +296,11 @@ export class CoinSystem extends createSystem({}) {
 
     game.coinsTotal = this.pickups.reduce((n, p) => n + (p.gem ? GEM_VALUE : 1), 0);
     game.coins = 0;
-    this.coinRims.count = this.coins.count;
-    this.coinHalos.count = this.coins.count;
-    this.gemHalos.count = this.gems.count;
-    this.writeAll(0);
+    // Every pickup gets its resting pose once; after that only the ones
+    // near the rider are touched each frame.
+    for (const p of this.pickups) this.writePickup(p, 0, false);
+    this.coins.instanceMatrix.needsUpdate = true;
+    this.gems.instanceMatrix.needsUpdate = true;
   }
 
   private place(s: number, lane: number, gem: boolean): void {
@@ -334,51 +319,65 @@ export class CoinSystem extends createSystem({}) {
       phase: Math.random() * Math.PI * 2,
       gem,
       taken: false,
-      index: mesh.count
+      index: mesh.count,
+      near: false
     });
     mesh.count += 1;
   }
 
-  /** Write every instance matrix; spinning ones near the rider, static far away. */
-  private writeAll(t: number): void {
-    const here = game.distance;
-    for (const p of this.pickups) {
-      const mesh = p.gem ? this.gems : this.coins;
-      if (p.taken) {
-        this.scale.setScalar(0);
-        this.matrix.compose(p.position, this.quat.identity(), this.scale);
-        mesh.setMatrixAt(p.index, this.matrix);
-        continue;
-      }
-      const near = Math.abs(p.s - here) < 90;
-      const spin = near ? t * (p.gem ? 3.0 : 6.5) + p.phase : p.phase;
-      this.quat.setFromAxisAngle(this.yAxis, p.yaw + spin);
-      // A wave runs down each string; gems bob a little more.
-      const bob = near ? Math.sin(t * 3.2 - p.s * 0.9) * (p.gem ? 0.1 : 0.06) : 0;
-      this.scale.setScalar(1);
-      this.matrix.compose(
-        p.position,
-        this.quat,
-        this.scale
-      );
-      if (bob !== 0) this.matrix.elements[13] += bob;
+  /** Write one pickup's instance matrix: spinning and bobbing if `animate`. */
+  private writePickup(p: Pickup, t: number, animate: boolean): void {
+    const mesh = p.gem ? this.gems : this.coins;
+    if (p.taken) {
+      this.scale.setScalar(0);
+      this.matrix.compose(p.position, this.quat.identity(), this.scale);
       mesh.setMatrixAt(p.index, this.matrix);
+      return;
     }
-    this.coins.instanceMatrix.needsUpdate = true;
-    this.gems.instanceMatrix.needsUpdate = true;
+    const spin = animate ? t * (p.gem ? 3.0 : 7.0) + p.phase : p.phase;
+    this.quat.setFromAxisAngle(this.yAxis, p.yaw + spin);
+    this.scale.setScalar(1);
+    this.matrix.compose(p.position, this.quat, this.scale);
+    // A wave runs down each string; gems bob a little more.
+    if (animate) this.matrix.elements[13] += Math.sin(t * 3.2 - p.s * 0.9) * (p.gem ? 0.1 : 0.06);
+    mesh.setMatrixAt(p.index, this.matrix);
+  }
+
+  /** Animate the pickups around the rider; the rest stay as they were. */
+  private updatePickups(t: number): void {
+    const here = game.distance;
+    let coinsDirty = false;
+    let gemsDirty = false;
+    for (const p of this.pickups) {
+      if (p.taken) continue;
+      const near = Math.abs(p.s - here) < NEAR;
+      if (!near && !p.near) continue;
+      p.near = near;
+      this.writePickup(p, t, near);
+      if (p.gem) gemsDirty = true;
+      else coinsDirty = true;
+    }
+    if (coinsDirty) this.coins.instanceMatrix.needsUpdate = true;
+    if (gemsDirty) this.gems.instanceMatrix.needsUpdate = true;
   }
 
   private collect(p: Pickup): void {
     p.taken = true;
+    this.writePickup(p, 0, false);
+    (p.gem ? this.gems : this.coins).instanceMatrix.needsUpdate = true;
     this.streak += 1;
     this.streakTimer = 1.4;
     game.coins += p.gem ? GEM_VALUE : 1;
     audio.coin(this.streak, p.gem);
 
+    // The celebration starts just ahead of the eyes, on the coin's side.
+    const origin = this.scratch.copy(FX_ORIGIN);
+    origin.x += LANE_X[p.lane] * 1.3;
+
     // Flash at the pickup point.
     const pop = this.pops.find((q) => q.life <= 0) ?? this.pops[0];
     pop.life = 0.35;
-    pop.sprite.position.copy(p.position);
+    pop.sprite.position.copy(origin);
     pop.sprite.visible = true;
     (pop.sprite.material as { color: Color }).color.setHex(p.gem ? 0xbfffe9 : 0xfff0a8);
 
@@ -387,13 +386,8 @@ export class CoinSystem extends createSystem({}) {
     const flyer = pool.find((f) => !f.active) ?? pool[0];
     flyer.active = true;
     flyer.t = 0;
-    // You take a coin by passing through it, so its position is your head.
-    // Launch the flight from a point out in front instead, or the first
-    // frames of the arc happen inside the camera.
-    this.player.getWorldDirection(this.rigForward);
-    flyer.from.copy(p.position).addScaledVector(this.rigForward, 1.4);
-    flyer.from.y -= 0.2;
-    flyer.mesh.position.copy(flyer.from);
+    flyer.from.copy(origin);
+    flyer.mesh.position.copy(origin);
     flyer.mesh.scale.setScalar(1);
     flyer.mesh.visible = true;
 
@@ -402,11 +396,11 @@ export class CoinSystem extends createSystem({}) {
     for (const s of this.sparks) {
       if (s.life > 0) continue;
       s.life = SPARK_LIFE;
-      s.sprite.position.copy(p.position);
+      s.sprite.position.copy(origin);
       s.velocity
         .set(Math.random() - 0.5, Math.random() * 0.6 + 0.2, Math.random() - 0.5)
         .normalize()
-        .multiplyScalar(2.2 + Math.random() * 2.4);
+        .multiplyScalar(1.6 + Math.random() * 1.8);
       s.sprite.visible = true;
       (s.sprite.material as { color: Color }).color.setHex(p.gem ? 0xa8ffe4 : 0xfff1a0);
       if (++spawned >= (p.gem ? 10 : 6)) break;
@@ -417,44 +411,46 @@ export class CoinSystem extends createSystem({}) {
     label.life = LABEL_LIFE;
     label.sprite.material = p.gem ? this.labelMaterials.gem : this.labelMaterials.coin;
     label.sprite.scale.set(p.gem ? 0.9 : 0.7, p.gem ? 0.45 : 0.35, 1);
-    label.sprite.position.copy(p.position).add(this.scratch.set(0, 0.35, 0));
+    label.sprite.position.copy(origin);
+    label.sprite.position.y += 0.35;
     label.sprite.visible = true;
   }
 
   /**
-   * Where taken coins fly to: into the HUD counter itself, so they land in
-   * the number rather than hanging in front of it. Falls back to a point
-   * ahead of the eyes if the panel isn't up.
+   * Where taken coins fly to, in the rig's frame: into the HUD counter
+   * itself, so they land in the number rather than hanging in front of
+   * it. Falls back to a point ahead of the eyes if the panel is parked.
    */
   private updateFlyTarget(): void {
     const hud = (this.globals.panels as { hud?: { object3D?: Object3D } } | undefined)?.hud
       ?.object3D;
-    if (hud && hud.visible) {
-      hud.getWorldPosition(this.flyTarget);
-      this.flyTarget.y -= 0.12;
+    if (hud && hud.position.y > -100) {
+      this.flyTarget.copy(hud.position);
+      this.flyTarget.y -= 0.1;
       return;
     }
-    this.player.getWorldDirection(this.rigForward);
-    this.flyTarget.copy(this.headWorld).addScaledVector(this.rigForward, 1.1);
-    this.flyTarget.y += 0.55;
+    this.flyTarget.set(0, 1.9, -2.4);
+  }
+
+  private updateFlyer(f: Flyer, delta: number): void {
+    if (!f.active) return;
+    f.t += delta;
+    const k = Math.min(1, f.t / FLY_TIME);
+    const ease = 1 - (1 - k) * (1 - k);
+    f.mesh.position.lerpVectors(f.from, this.flyTarget, ease);
+    f.mesh.position.y += Math.sin(k * Math.PI) * 0.35; // a little arc
+    f.mesh.scale.setScalar(Math.max(0.001, 1 - k * 0.85));
+    f.mesh.rotation.y += delta * 16;
+    if (k >= 1) {
+      f.active = false;
+      f.mesh.visible = false;
+    }
   }
 
   private updateEffects(delta: number): void {
     this.updateFlyTarget();
-    for (const f of [...this.flyers, ...this.gemFlyers]) {
-      if (!f.active) continue;
-      f.t += delta;
-      const k = Math.min(1, f.t / FLY_TIME);
-      const ease = 1 - (1 - k) * (1 - k);
-      f.mesh.position.lerpVectors(f.from, this.flyTarget, ease);
-      f.mesh.position.y += Math.sin(k * Math.PI) * 0.45; // a little arc
-      f.mesh.scale.setScalar(Math.max(0.001, 1 - k));
-      f.mesh.rotation.y += delta * 16;
-      if (k >= 1) {
-        f.active = false;
-        f.mesh.visible = false;
-      }
-    }
+    for (const f of this.flyers) this.updateFlyer(f, delta);
+    for (const f of this.gemFlyers) this.updateFlyer(f, delta);
     for (const s of this.sparks) {
       if (s.life <= 0) continue;
       s.life -= delta;
@@ -468,10 +464,18 @@ export class CoinSystem extends createSystem({}) {
     for (const l of this.labels) {
       if (l.life <= 0) continue;
       l.life -= delta;
-      l.sprite.position.y += delta * 1.3;
+      l.sprite.position.y += delta * 1.1;
       const k = Math.max(0, l.life / LABEL_LIFE);
       (l.sprite.material as { opacity: number }).opacity = Math.min(1, k * 1.6);
       if (l.life <= 0) l.sprite.visible = false;
+    }
+    for (const pop of this.pops) {
+      if (pop.life <= 0) continue;
+      pop.life -= delta;
+      const k = 1 - Math.max(0, pop.life) / 0.35;
+      pop.sprite.scale.setScalar(0.5 + k * 2.0);
+      (pop.sprite.material as { opacity: number }).opacity = (1 - k) * 0.8;
+      if (pop.life <= 0) pop.sprite.visible = false;
     }
   }
 
@@ -479,23 +483,11 @@ export class CoinSystem extends createSystem({}) {
     const t = time / 1000;
     this.uTime.value = t;
 
-    // Pickup bursts: swell and fade.
-    for (const pop of this.pops) {
-      if (pop.life <= 0) continue;
-      pop.life -= delta;
-      const k = 1 - Math.max(0, pop.life) / 0.35;
-      pop.sprite.scale.setScalar(0.5 + k * 2.4);
-      (pop.sprite.material as { opacity: number }).opacity = (1 - k) * 0.9;
-      if (pop.life <= 0) pop.sprite.visible = false;
-    }
-
     if (this.streakTimer > 0) {
       this.streakTimer -= delta;
       if (this.streakTimer <= 0) this.streak = 0;
     }
 
-    const env = this.world.getSystem(EnvironmentSystem);
-    if (env) env.getHeadWorld(this.headWorld);
     this.updateEffects(delta);
 
     if (this.pickups.length === 0) return;
@@ -503,7 +495,9 @@ export class CoinSystem extends createSystem({}) {
     // Sweep: anything whose arc-length we crossed this frame, in our lane.
     if (game.phase === 'SLIDE') {
       const slide = this.world.getSystem(SlideSystem);
+      const env = this.world.getSystem(EnvironmentSystem);
       if (slide && env) {
+        env.getHeadWorld(this.headWorld);
         const lateral = slide.lateralOf(this.headWorld);
         const from = slide.previousDistance - 0.3;
         const to = slide.distance + 0.3;
@@ -514,24 +508,104 @@ export class CoinSystem extends createSystem({}) {
       }
     }
 
-    this.writeAll(t);
+    this.updatePickups(t);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Pickup materials — bright, self-lit, cartoon-glossy.
+// Coin geometry — a bevelled disc, axis along +Z (face toward the rider).
 // ---------------------------------------------------------------------------
 
 /**
- * Coin / rim / gem surface. `mode` 0 splits a coin into a bright face and an
- * orange edge by its local normal, 1 paints everything the edge colour (the
- * bezel torus), 2 shades a gem's facets top-to-bottom. Lighting only ever
- * nudges the colour — the pickups glow on their own — and the face carries
- * a white glint crescent, a sweeping shine stripe and a view-based rim light.
+ * Lathe a coin profile around Z with a hard crease between every profile
+ * segment and smooth shading around the rim, so the flat face reads flat,
+ * the bevels catch the light as rings, and the edge stays round. Front
+ * face at +Z. About 400 triangles at 24 sides.
  */
+function makeCoinGeometry(radius: number, sides: number): BufferGeometry {
+  const h = 0.032; // half thickness of the face
+  const lip = 0.014; // how far the rim stands proud of the face
+  // Profile as (r, z) from the front centre round to the back centre.
+  const front: Array<[number, number]> = [
+    [0, h],
+    [radius * 0.72, h],
+    [radius * 0.82, h + lip],
+    [radius * 0.94, h + lip],
+    [radius, h - 0.004]
+  ];
+  const back = front.map(([r, z]): [number, number] => [r, -z]).reverse();
+  const profile = [...front, ...back];
+
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const indices: number[] = [];
+  const a = new Vector3();
+  const b = new Vector3();
+  const c = new Vector3();
+  const n = new Vector3();
+
+  for (let k = 0; k < profile.length - 1; k++) {
+    const [r0, z0] = profile[k];
+    const [r1, z1] = profile[k + 1];
+    const dr = r1 - r0;
+    const dz = z1 - z0;
+    // Outward normal of this profile segment in the (r, z) plane.
+    let nr = -dz;
+    let nz = dr;
+    const len = Math.hypot(nr, nz) || 1;
+    nr /= len;
+    nz /= len;
+    const base = positions.length / 3;
+    for (let i = 0; i <= sides; i++) {
+      const angle = (i / sides) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      positions.push(r0 * cos, r0 * sin, z0, r1 * cos, r1 * sin, z1);
+      normals.push(nr * cos, nr * sin, nz, nr * cos, nr * sin, nz);
+    }
+    // Wind each quad so it faces its normal (the profile changes direction
+    // on the back half, so check rather than assume).
+    const i0 = base;
+    const i1 = base + 1;
+    const i2 = base + 2;
+    const i3 = base + 3;
+    a.fromArray(positions, i0 * 3);
+    b.fromArray(positions, i1 * 3);
+    c.fromArray(positions, i2 * 3);
+    n.subVectors(b, a).cross(c.sub(a));
+    if (n.lengthSq() < 1e-12) {
+      // Degenerate at a centre point — test the other triangle.
+      a.fromArray(positions, i1 * 3);
+      b.fromArray(positions, i3 * 3);
+      c.fromArray(positions, i2 * 3);
+      n.subVectors(b, a).cross(c.sub(a));
+    }
+    const flip = n.x * nr + n.z * nz < 0; // the first quad sits at angle 0
+    for (let i = 0; i < sides; i++) {
+      const p0 = base + i * 2;
+      const p1 = p0 + 1;
+      const p2 = p0 + 2;
+      const p3 = p0 + 3;
+      if (flip) indices.push(p0, p2, p1, p1, p2, p3);
+      else indices.push(p0, p1, p2, p1, p3, p2);
+    }
+  }
+
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  return geometry;
+}
+
+// ---------------------------------------------------------------------------
+// Pickup material — Mario gold: flat cel steps, a hard gloss flash as the
+// face swings through the light, a bright bevel ring, and an ink silhouette.
+// ---------------------------------------------------------------------------
+
 function createPickupMaterial(
   uTime: { value: number },
-  opts: { mode: number; face: number; edge: number; radius: number }
+  opts: { gem: boolean; face: number; edge: number; dark: number; radius: number }
 ): ShaderMaterial {
   return new ShaderMaterial({
     fog: true,
@@ -541,7 +615,8 @@ function createPickupMaterial(
         uTime,
         uFace: { value: new Color(opts.face) },
         uEdge: { value: new Color(opts.edge) },
-        uMode: { value: opts.mode },
+        uDark: { value: new Color(opts.dark) },
+        uGem: { value: opts.gem ? 1 : 0 },
         uRadius: { value: opts.radius }
       }
     ]),
@@ -549,7 +624,7 @@ function createPickupMaterial(
       varying vec3 vLocal;
       varying vec3 vLocalN;
       varying vec3 vWorldN;
-      varying vec3 vView;
+      varying vec3 vWorldPos;
       #include <fog_pars_vertex>
       void main() {
         vLocal = position;
@@ -560,8 +635,8 @@ function createPickupMaterial(
           mat4 mm = modelMatrix;
         #endif
         vec4 wp = mm * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
         vWorldN = normalize(mat3(mm) * normal);
-        vView = normalize(cameraPosition - wp.xyz);
         vec4 mvPosition = viewMatrix * wp;
         gl_Position = projectionMatrix * mvPosition;
         #include <fog_vertex>
@@ -571,102 +646,61 @@ function createPickupMaterial(
       varying vec3 vLocal;
       varying vec3 vLocalN;
       varying vec3 vWorldN;
-      varying vec3 vView;
+      varying vec3 vWorldPos;
       uniform float uTime;
       uniform vec3 uFace;
       uniform vec3 uEdge;
-      uniform float uMode;
+      uniform vec3 uDark;
+      uniform float uGem;
       uniform float uRadius;
       #include <fog_pars_fragment>
       ${LIGHT_GLSL}
       void main() {
-        float faceness = 0.0;
-        if (uMode < 0.5) faceness = smoothstep(0.4, 0.6, abs(vLocalN.z));
-        else if (uMode > 1.5) faceness = smoothstep(-0.2, 0.7, vLocalN.y);
-        vec3 col = mix(uEdge, uFace, faceness);
-
-        // Sun only nudges it: bright in the light, still bright in shade.
         vec3 n = normalize(vWorldN);
-        col *= 0.82 + 0.28 * celBands(dot(n, SUN_DIR));
+        vec3 v = normalize(cameraPosition - vWorldPos);
+        vec3 ln = normalize(vLocalN);
 
-        if (uMode < 0.5) {
-          // Cartoon glint: a white crescent at the upper-left of the face.
-          vec2 p = vLocal.xy / uRadius;
-          float r = length(p);
-          vec2 dir = p / max(r, 1e-4);
-          float crescent = smoothstep(0.74, 0.92, dot(dir, normalize(vec2(-0.6, 0.8))))
-                         * smoothstep(0.55, 0.72, r) * (1.0 - smoothstep(0.84, 0.92, r));
-          col = mix(col, vec3(1.0, 0.99, 0.9), crescent * faceness * 0.8);
-          // A shine stripe sweeping across the face.
-          float band = fract((p.x + p.y) * 0.45 + uTime * 0.7);
-          float stripe = smoothstep(0.0, 0.04, band) * smoothstep(0.16, 0.10, band);
-          col = mix(col, vec3(1.0), stripe * faceness * 0.3);
-          // Thin bright ring just inside the bezel.
-          float ring = smoothstep(0.80, 0.84, r) * (1.0 - smoothstep(0.88, 0.92, r));
-          col = mix(col, vec3(1.0, 0.95, 0.7), ring * faceness * 0.6);
+        vec3 col;
+        float faceness;
+        if (uGem < 0.5) {
+          // Flat faces are bright gold, bevels and edge a deeper orange-gold.
+          faceness = smoothstep(0.8, 0.95, abs(ln.z));
+          col = mix(uEdge, uFace, faceness);
+          // A darker embossed ring inside the rim, like a struck coin.
+          float r = length(vLocal.xy) / uRadius;
+          float ring = smoothstep(0.60, 0.64, r) * (1.0 - smoothstep(0.68, 0.72, r));
+          col = mix(col, uDark, ring * faceness * 0.6);
+        } else {
+          faceness = 0.0;
+          col = mix(uEdge, uFace, smoothstep(-0.3, 0.8, ln.y));
         }
 
-        // Rim light from the view angle.
-        float rim = pow(1.0 - abs(dot(n, normalize(vView))), 3.0);
-        col += vec3(1.0, 0.92, 0.7) * rim * 0.3;
+        // Three flat sun steps; the pickups stay bright even in shade.
+        float lit = celBands(dot(n, SUN_DIR));
+        col *= 0.72 + 0.34 * lit;
+        // Metal reflects its surroundings: sky above brightens, ground below darkens.
+        vec3 refl = reflect(-v, n);
+        col *= mix(0.80, 1.14, smoothstep(-0.3, 0.6, refl.y));
+
+        // Gloss. The flat face flashes near-white as it swings through the
+        // light (the horizontal half-vector, so a spinning coin actually
+        // hits it); the bevels and edge carry a tight highlight ring.
+        vec3 h = normalize(SUN_DIR + v);
+        vec3 hh = normalize(vec3(h.x, 0.0, h.z));
+        float swing = max(dot(n, hh), 0.0);
+        float flash = smoothstep(0.92, 0.99, swing) * faceness;
+        float gloss = pow(swing, 5.0) * 0.16 * faceness;
+        float spec = pow(max(dot(n, h), 0.0), 36.0);
+        float glint = smoothstep(0.25, 0.5, spec) * (1.0 - faceness);
+        col += vec3(1.0, 0.97, 0.85) * (flash * 0.7 + gloss + glint * 0.7);
+
+        // Ink silhouette from the view angle, matching the outlined world.
+        float facing = abs(dot(n, v));
+        col = mix(vec3(0.16, 0.10, 0.04), col, smoothstep(0.10, 0.26, facing));
 
         gl_FragColor = vec4(col, 1.0);
         #include <fog_fragment>
         #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-      }
-    `
-  });
-}
-
-/**
- * A soft additive halo: a camera-facing quad built in the vertex shader from
- * the instance's position and scale, so it follows each pickup, ignores its
- * spin, and collapses with it when taken.
- */
-function createHaloMaterial(
-  uTime: { value: number },
-  color: number,
-  size: number
-): ShaderMaterial {
-  return new ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    blending: AdditiveBlending,
-    uniforms: { uTime, uColor: { value: new Color(color) }, uSize: { value: size } },
-    vertexShader: /* glsl */ `
-      varying vec2 vUv;
-      varying float vFade;
-      uniform float uSize;
-      uniform float uTime;
-      void main() {
-        vUv = uv;
-        #ifdef USE_INSTANCING
-          mat4 mm = modelMatrix * instanceMatrix;
-        #else
-          mat4 mm = modelMatrix;
-        #endif
-        vec3 center = (mm * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-        float sc = length(mm[0].xyz);
-        vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-        vec3 camUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
-        float pulse = 1.0 + 0.08 * sin(uTime * 4.0 + center.y * 0.7);
-        // Fade out close to the eye: a 1.5m additive quad at head height
-        // whites out the whole view as you sweep through a coin.
-        vFade = smoothstep(0.8, 3.2, distance(center, cameraPosition));
-        vec3 wp = center + (camRight * position.x + camUp * position.y) * uSize * sc * pulse;
-        gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      varying vec2 vUv;
-      varying float vFade;
-      uniform vec3 uColor;
-      void main() {
-        float d = length(vUv - 0.5) * 2.0;
-        float a = 1.0 - smoothstep(0.0, 1.0, d);
-        a = a * a * 0.45 * vFade;
-        gl_FragColor = vec4(uColor * a, a);
         #include <colorspace_fragment>
       }
     `
