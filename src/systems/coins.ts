@@ -5,15 +5,16 @@ import {
   DynamicDrawUsage,
   InstancedMesh,
   Matrix4,
-  MeshLambertMaterial,
+  Mesh,
   OctahedronGeometry,
   Quaternion,
   Sprite,
+  SpriteMaterial,
   Vector3
 } from '@iwsdk/core';
 
 import { LANE_X, PAINT } from '../constants.js';
-import { makeGlow } from '../env/fx.js';
+import { addOutline, makeGlow, makeTextTexture, toon } from '../env/fx.js';
 import { HelterPath, helterPath } from '../ride/path.js';
 import { audio } from '../audio.js';
 import { game, on } from '../state.js';
@@ -50,6 +51,29 @@ interface Pop {
   life: number;
 }
 
+/** A taken coin on its way up to the counter. */
+interface Flyer {
+  mesh: Mesh;
+  from: Vector3;
+  t: number;
+  active: boolean;
+}
+
+interface Spark {
+  sprite: Sprite;
+  velocity: Vector3;
+  life: number;
+}
+
+interface Label {
+  sprite: Sprite;
+  life: number;
+}
+
+const FLY_TIME = 0.42;
+const SPARK_LIFE = 0.5;
+const LABEL_LIFE = 0.75;
+
 /**
  * Subway Surfers on a slide: strings of spinning coins laid through the
  * gaps between gates, some hopping lanes mid-string so you have to lean
@@ -60,8 +84,18 @@ interface Pop {
 export class CoinSystem extends createSystem({}) {
   private coins!: InstancedMesh;
   private gems!: InstancedMesh;
+  private coinsOutline!: InstancedMesh;
+  private gemsOutline!: InstancedMesh;
   private pickups: Pickup[] = [];
   private pops: Pop[] = [];
+  private flyers: Flyer[] = [];
+  private gemFlyers: Flyer[] = [];
+  private sparks: Spark[] = [];
+  private labels: Label[] = [];
+  private labelMaterials!: { coin: SpriteMaterial; gem: SpriteMaterial };
+  private flyTarget = new Vector3();
+  private rigForward = new Vector3();
+  private scratch = new Vector3();
   private streak = 0;
   private streakTimer = 0;
   private sample = HelterPath.makeSample();
@@ -75,23 +109,59 @@ export class CoinSystem extends createSystem({}) {
     // A coin stood on edge, face toward the rider: cylinder axis along Z.
     const coinGeo = new CylinderGeometry(0.27, 0.27, 0.07, 22);
     coinGeo.rotateX(Math.PI / 2);
-    this.coins = new InstancedMesh(
-      coinGeo,
-      new MeshLambertMaterial({ color: 0xffc93c, emissive: 0x7a5200 }),
-      MAX_COINS
-    );
+    const coinMaterial = toon({ color: 0xffc93c, emissive: 0x8a5a00 });
+    const gemMaterial = toon({ color: PAINT.mint, emissive: 0x1b6f5c });
+    this.coins = new InstancedMesh(coinGeo, coinMaterial, MAX_COINS);
     const gemGeo = new OctahedronGeometry(0.26);
     gemGeo.scale(0.8, 1.25, 0.8);
-    this.gems = new InstancedMesh(
-      gemGeo,
-      new MeshLambertMaterial({ color: PAINT.mint, emissive: 0x1b6f5c }),
-      MAX_GEMS
-    );
+    this.gems = new InstancedMesh(gemGeo, gemMaterial, MAX_GEMS);
     for (const mesh of [this.coins, this.gems]) {
       mesh.instanceMatrix.setUsage(DynamicDrawUsage);
       mesh.frustumCulled = false;
       mesh.count = 0;
       this.scene.add(mesh);
+    }
+    this.coinsOutline = addOutline(this.coins, 0.03) as InstancedMesh;
+    this.gemsOutline = addOutline(this.gems, 0.03) as InstancedMesh;
+
+    // Flyers: the coin you just took, spinning up toward the counter.
+    for (let i = 0; i < 10; i++) {
+      const mesh = new Mesh(coinGeo, coinMaterial);
+      addOutline(mesh, 0.03);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.flyers.push({ mesh, from: new Vector3(), t: 0, active: false });
+    }
+    for (let i = 0; i < 3; i++) {
+      const mesh = new Mesh(gemGeo, gemMaterial);
+      addOutline(mesh, 0.03);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.gemFlyers.push({ mesh, from: new Vector3(), t: 0, active: false });
+    }
+
+    // Sparkles that burst out of a pickup.
+    for (let i = 0; i < 42; i++) {
+      const sprite = makeGlow(0xfff3b8, 0.22, 0);
+      sprite.visible = false;
+      this.scene.add(sprite);
+      this.sparks.push({ sprite, velocity: new Vector3(), life: 0 });
+    }
+
+    // Floating "+1" / "+5" labels.
+    const labelMat = (text: string, color: string): SpriteMaterial =>
+      new SpriteMaterial({
+        map: makeTextTexture(text, { color, width: 256, height: 128 }),
+        transparent: true,
+        depthWrite: false
+      });
+    this.labelMaterials = { coin: labelMat('+1', '#ffd54a'), gem: labelMat('+5', '#8ff0d2') };
+    for (let i = 0; i < 6; i++) {
+      const sprite = new Sprite(this.labelMaterials.coin.clone());
+      sprite.scale.set(0.7, 0.35, 1);
+      sprite.visible = false;
+      this.scene.add(sprite);
+      this.labels.push({ sprite, life: 0 });
     }
 
     // A small pool of glow bursts for the pickup pop.
@@ -112,7 +182,21 @@ export class CoinSystem extends createSystem({}) {
     this.pickups = [];
     this.coins.count = 0;
     this.gems.count = 0;
+    this.coinsOutline.count = 0;
+    this.gemsOutline.count = 0;
     this.streak = 0;
+    for (const f of [...this.flyers, ...this.gemFlyers]) {
+      f.active = false;
+      f.mesh.visible = false;
+    }
+    for (const s of this.sparks) {
+      s.life = 0;
+      s.sprite.visible = false;
+    }
+    for (const l of this.labels) {
+      l.life = 0;
+      l.sprite.visible = false;
+    }
     this.pops.forEach((p) => {
       p.life = 0;
       p.sprite.visible = false;
@@ -189,6 +273,8 @@ export class CoinSystem extends createSystem({}) {
 
     game.coinsTotal = this.pickups.reduce((n, p) => n + (p.gem ? GEM_VALUE : 1), 0);
     game.coins = 0;
+    this.coinsOutline.count = this.coins.count;
+    this.gemsOutline.count = this.gems.count;
     this.writeAll(0);
   }
 
@@ -224,10 +310,11 @@ export class CoinSystem extends createSystem({}) {
         mesh.setMatrixAt(p.index, this.matrix);
         continue;
       }
-      const near = Math.abs(p.s - here) < 80;
-      const spin = near ? t * (p.gem ? 2.2 : 4.0) + p.phase : p.phase;
+      const near = Math.abs(p.s - here) < 90;
+      const spin = near ? t * (p.gem ? 3.0 : 6.5) + p.phase : p.phase;
       this.quat.setFromAxisAngle(this.yAxis, p.yaw + spin);
-      const bob = near && p.gem ? Math.sin(t * 3 + p.phase) * 0.08 : 0;
+      // A wave runs down each string; gems bob a little more.
+      const bob = near ? Math.sin(t * 3.2 - p.s * 0.9) * (p.gem ? 0.1 : 0.06) : 0;
       this.scale.setScalar(1);
       this.matrix.compose(
         p.position,
@@ -248,11 +335,88 @@ export class CoinSystem extends createSystem({}) {
     game.coins += p.gem ? GEM_VALUE : 1;
     audio.coin(this.streak, p.gem);
 
+    // Flash at the pickup point.
     const pop = this.pops.find((q) => q.life <= 0) ?? this.pops[0];
     pop.life = 0.35;
     pop.sprite.position.copy(p.position);
     pop.sprite.visible = true;
     (pop.sprite.material as { color: Color }).color.setHex(p.gem ? 0xbfffe9 : 0xfff0a8);
+
+    // The coin itself lifts off toward the counter.
+    const pool = p.gem ? this.gemFlyers : this.flyers;
+    const flyer = pool.find((f) => !f.active) ?? pool[0];
+    flyer.active = true;
+    flyer.t = 0;
+    flyer.from.copy(p.position);
+    flyer.mesh.position.copy(p.position);
+    flyer.mesh.scale.setScalar(1);
+    flyer.mesh.visible = true;
+
+    // Sparkles burst outward and fall.
+    let spawned = 0;
+    for (const s of this.sparks) {
+      if (s.life > 0) continue;
+      s.life = SPARK_LIFE;
+      s.sprite.position.copy(p.position);
+      s.velocity
+        .set(Math.random() - 0.5, Math.random() * 0.6 + 0.2, Math.random() - 0.5)
+        .normalize()
+        .multiplyScalar(2.2 + Math.random() * 2.4);
+      s.sprite.visible = true;
+      (s.sprite.material as { color: Color }).color.setHex(p.gem ? 0xa8ffe4 : 0xfff1a0);
+      if (++spawned >= (p.gem ? 10 : 6)) break;
+    }
+
+    // "+1" / "+5" floats up and fades.
+    const label = this.labels.find((l) => l.life <= 0) ?? this.labels[0];
+    label.life = LABEL_LIFE;
+    label.sprite.material = p.gem ? this.labelMaterials.gem : this.labelMaterials.coin;
+    label.sprite.scale.set(p.gem ? 0.9 : 0.7, p.gem ? 0.45 : 0.35, 1);
+    label.sprite.position.copy(p.position).add(this.scratch.set(0, 0.35, 0));
+    label.sprite.visible = true;
+  }
+
+  /** Where taken coins fly to: just ahead of and above the rider's eyes. */
+  private updateFlyTarget(): void {
+    this.player.getWorldDirection(this.rigForward);
+    this.flyTarget.copy(this.headWorld).addScaledVector(this.rigForward, 1.1);
+    this.flyTarget.y += 0.55;
+  }
+
+  private updateEffects(delta: number): void {
+    this.updateFlyTarget();
+    for (const f of [...this.flyers, ...this.gemFlyers]) {
+      if (!f.active) continue;
+      f.t += delta;
+      const k = Math.min(1, f.t / FLY_TIME);
+      const ease = 1 - (1 - k) * (1 - k);
+      f.mesh.position.lerpVectors(f.from, this.flyTarget, ease);
+      f.mesh.position.y += Math.sin(k * Math.PI) * 0.45; // a little arc
+      f.mesh.scale.setScalar(1 - 0.8 * k);
+      f.mesh.rotation.y += delta * 16;
+      if (k >= 1) {
+        f.active = false;
+        f.mesh.visible = false;
+      }
+    }
+    for (const s of this.sparks) {
+      if (s.life <= 0) continue;
+      s.life -= delta;
+      s.velocity.y -= 7 * delta;
+      s.sprite.position.addScaledVector(s.velocity, delta);
+      const k = Math.max(0, s.life / SPARK_LIFE);
+      s.sprite.scale.setScalar(0.1 + 0.2 * k);
+      (s.sprite.material as { opacity: number }).opacity = k;
+      if (s.life <= 0) s.sprite.visible = false;
+    }
+    for (const l of this.labels) {
+      if (l.life <= 0) continue;
+      l.life -= delta;
+      l.sprite.position.y += delta * 1.3;
+      const k = Math.max(0, l.life / LABEL_LIFE);
+      (l.sprite.material as { opacity: number }).opacity = Math.min(1, k * 1.6);
+      if (l.life <= 0) l.sprite.visible = false;
+    }
   }
 
   update(delta: number, time: number): void {
@@ -273,14 +437,16 @@ export class CoinSystem extends createSystem({}) {
       if (this.streakTimer <= 0) this.streak = 0;
     }
 
+    const env = this.world.getSystem(EnvironmentSystem);
+    if (env) env.getHeadWorld(this.headWorld);
+    this.updateEffects(delta);
+
     if (this.pickups.length === 0) return;
 
     // Sweep: anything whose arc-length we crossed this frame, in our lane.
     if (game.phase === 'SLIDE') {
       const slide = this.world.getSystem(SlideSystem);
-      const env = this.world.getSystem(EnvironmentSystem);
       if (slide && env) {
-        env.getHeadWorld(this.headWorld);
         const lateral = slide.lateralOf(this.headWorld);
         const from = slide.previousDistance - 0.3;
         const to = slide.distance + 0.3;

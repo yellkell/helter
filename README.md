@@ -3,10 +3,10 @@
 Ride a gigantic seaside helter skelter in VR. Built on Meta's
 [Immersive Web SDK](https://developers.meta.com/horizon/documentation/web/immersive-web-sdk/)
 (IWSDK + Three.js + WebXR), it takes the sliding mechanics from
-[DOWN](https://github.com/yellkell/down) — the eased launch, the 20 m/s
+[DOWN](https://github.com/yellkell/down) — the eased launch, the constant
 descent, leaning between the barriers, the hard stop and shockwave at every
 landing — and wraps them around a 300-metre candy-striped tower on a
-sunny stretch of coast.
+sunny, cel-shaded stretch of coast.
 
 You start on the balcony at the top. The slide spirals around the tower in
 three tiers, stopping on a landing bay between each so you can catch your
@@ -14,9 +14,9 @@ breath before the next drop. Gates stand across the lanes on the way down;
 lean left or right with your real body to slip past them. Clip one and
 you're off the ride. Make it to the bottom and the fair is waiting.
 
-| The tower | Start | Coins and gates |
+| The tower | The sea turn | Coins and gates |
 | --- | --- | --- |
-| ![Tower](docs/screenshot-tower.png) | ![Start](docs/screenshot-start.png) | ![Coins](docs/screenshot-coins.png) |
+| ![Tower](docs/screenshot-tower.png) | ![Sea turn](docs/screenshot-start.png) | ![Coins](docs/screenshot-coins.png) |
 
 ## How to play
 
@@ -81,7 +81,9 @@ public/audio        the DOWN soundtrack and voice lines
 
 DOWN's slide is a straight 32° line; its `SlideSystem` integrates speed × dt
 along that line, eases the launch over 1.2 s, then runs flat out into a hard
-stop with an arrival shockwave. The barriers are 0.42 × 2.6 m slabs on three
+stop with an arrival shockwave. DOWN rode at 20 m/s; the spiral runs at
+16 m/s (58 km/h), which turns out to be plenty when the world is wheeling
+past. The barriers are 0.42 × 2.6 m slabs on three
 lanes spread to ±0.5 m, in the same lane patterns per difficulty, and the
 head-vs-box collision test is unchanged.
 
@@ -96,16 +98,26 @@ DOWN's too, raked down the 26° pitch of the slide.
 The coins are new: laid after the gates so none sits inside a board, in
 strings of six to eleven, with a lane hop on the longer ones. A pickup is a
 sweep test — did the rig cross the coin's arc-length this frame while the
-head sat in its lane — so nothing is missed at speed, and a synthesised
-ding climbs a semitone per coin in a streak.
+head sat in its lane — so nothing is missed at speed. Taking one is a
+moment: the coin lifts off and spins up toward your counter while it
+shrinks, sparkles burst and fall, a "+1" (or "+5") floats up, and a
+synthesised ding climbs a semitone per coin in a streak.
 
-Everything else is new and procedural: a Rayleigh-ish sky with drifting
-fbm clouds and a real sun, a heightfield coast with sand, downs, a chalk
-ridge and 1,100 instanced trees, an animated sea with fresnel and sun
-glitter, the striped tower with its balcony, landing bays, brackets and
-flag, and a fair at its foot — tents, a turning big wheel, bunting,
-umbrellas, gulls, and a paved plaza with a red ring where the slide runs out.
+Everything else is new, procedural, and drawn in a cel-shaded storybook
+style: every standard mesh is a toon material with three flat lighting
+steps, every custom shader (tower stripes, slide bed, sea, land, sky) lights
+in the same three bands, and the tower, roof, gates, coins, trees, tents
+and big wheel wear ink outlines. The sky is a flat gradient with hard-edged
+puffy clouds and a big flat sun. The land is a heightfield coast coloured in
+hard bands — wet sand, sand, grass with copse and meadow patches, rock on
+steep faces, snow on the ridge — with a floor under it so nothing inland
+dips below sea level. The sea knows the shape of the land it laps against:
+flat colour bands by depth, drawn wave lines, and a lacy foam edge along
+the beach. Around the tower: a balcony, landing bays, brackets, a flag,
+pennant bunting the whole way down the outer rail, and a fair at the foot —
+tents, a turning big wheel, umbrellas, gulls, and a flagstone plaza with a
+red ring where the slide runs out.
 
-A note on comfort: the rig rotates continuously on the spiral (about 55°/s
+A note on comfort: the rig rotates continuously on the spiral (about 45°/s
 at full speed). That's the ride, but it is more intense than DOWN's straight
 drops — `?calm` is there for a reason.

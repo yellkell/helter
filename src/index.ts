@@ -51,7 +51,7 @@ World.create(document.getElementById('scene-container') as HTMLDivElement, {
   const { scene, player } = world;
 
   // Coastal haze: near things crisp, the far hills and the horizon milky.
-  scene.fog = new Fog(FOG_COLOR, 350, 4600);
+  scene.fog = new Fog(FOG_COLOR, 500, 4800);
 
   // --- The world ---------------------------------------------------------
   const sky = createSky();

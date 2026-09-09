@@ -4,7 +4,6 @@ import {
   DoubleSide,
   Group,
   Mesh,
-  MeshLambertMaterial,
   PlaneGeometry,
   ShaderMaterial,
   UniformsLib,
@@ -13,7 +12,8 @@ import {
 } from '@iwsdk/core';
 
 import { PAINT, SUN_DIR } from '../constants.js';
-import { NOISE_GLSL } from './fx.js';
+import { addOutline, LIGHT_GLSL, NOISE_GLSL, toon } from './fx.js';
+import { LAND_HEIGHT_GLSL } from './terrain.js';
 
 export interface SeaHandles {
   group: Group;
@@ -23,9 +23,9 @@ export interface SeaHandles {
 }
 
 /**
- * The sea: one big plane whose shader rolls a swell through a couple of
- * noise octaves, tints deep-to-shallow by distance from the beach, reflects
- * the sky by fresnel and throws the sun's glitter back at you.
+ * Cartoon sea: flat colour bands by depth (it knows the shape of the land
+ * it laps against), a lacy foam line where it meets the beach, drifting
+ * crest streaks, hard sun glints, and a hint of sky in the fresnel.
  */
 export function createSea(): SeaHandles {
   const group = new Group();
@@ -57,44 +57,60 @@ export function createSea(): SeaHandles {
       uniform vec3 uSun;
       #include <fog_pars_fragment>
       ${NOISE_GLSL}
-
-      float swell(vec2 p, float t) {
-        float h = 0.0;
-        h += sin(p.x * 0.11 + p.y * 0.07 + t * 0.9) * 0.55;
-        h += sin(p.x * 0.05 - p.y * 0.13 + t * 0.6) * 0.45;
-        h += (vnoise(vec3(p * 0.12, t * 0.25)) - 0.5) * 1.4;
-        h += (vnoise(vec3(p * 0.45, t * 0.6)) - 0.5) * 0.5;
-        return h;
-      }
+      ${LIGHT_GLSL}
+      ${LAND_HEIGHT_GLSL}
 
       void main() {
         vec2 p = vWorld.xz;
         float t = uTime;
-        // Finite-difference normal from the swell height field.
-        float e = 0.6;
-        float h0 = swell(p, t);
-        float hx = swell(p + vec2(e, 0.0), t);
-        float hz = swell(p + vec2(0.0, e), t);
-        vec3 n = normalize(vec3(h0 - hx, e * 1.6, h0 - hz));
+        float depth = -landHeight(p); // metres of water under this point
 
+        // Flat colour bands by depth.
+        vec3 shallow = vec3(0.22, 0.72, 0.68);
+        vec3 mid = vec3(0.06, 0.42, 0.62);
+        vec3 deep = vec3(0.02, 0.20, 0.44);
+        vec3 col = deep;
+        col = mix(col, mid, 1.0 - smoothstep(9.0, 11.0, depth));
+        col = mix(col, shallow, 1.0 - smoothstep(2.6, 3.4, depth));
+
+        // A gentle swell, only for the glints and the sky tint.
+        float e = 0.8;
+        float h0 = vnoise(vec3(p * 0.09, t * 0.25)) + sin(p.x * 0.07 + t * 0.7) * 0.4;
+        float hx = vnoise(vec3((p + vec2(e, 0.0)) * 0.09, t * 0.25)) + sin((p.x + e) * 0.07 + t * 0.7) * 0.4;
+        float hz = vnoise(vec3((p + vec2(0.0, e)) * 0.09, t * 0.25));
+        vec3 n = normalize(vec3(h0 - hx, e * 1.4, h0 - hz));
         vec3 viewDir = normalize(cameraPosition - vWorld);
-        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 4.0);
+        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
+        col = mix(col, vec3(0.60, 0.78, 0.94), fresnel * 0.3);
 
-        // Colour: turquoise in the shallows off the beach, deep blue further out.
-        float shallow = 1.0 - smoothstep(320.0, 900.0, vWorld.z);
-        vec3 deep = vec3(0.03, 0.16, 0.30);
-        vec3 shelf = vec3(0.10, 0.48, 0.52);
-        vec3 water = mix(deep, shelf, shallow * 0.85);
-        vec3 skyRef = vec3(0.62, 0.76, 0.92);
-        vec3 col = mix(water, skyRef, fresnel * 0.85);
+        // Drifting crest streaks: thin white arcs, stretched along the shore.
+        // The noise domain is rotated and layered so nothing lines up on a grid.
+        // Cartoon wave lines: thin wavy strokes running along the shore,
+        // warped by noise and broken into dashes so they never tile.
+        mat2 rot = mat2(0.96, -0.28, 0.28, 0.96);
+        vec2 q = rot * p;
+        float warp = fbm(vec3(q * 0.02, t * 0.08)) * 9.0;
+        float line = sin(q.y * 0.22 + warp - t * 1.2);
+        float dash = smoothstep(0.42, 0.5, fbm(vec3(q * 0.05 + 30.0, t * 0.12)));
+        float streak = smoothstep(0.90, 0.94, line) * dash;
+        col = mix(col, vec3(0.93, 0.98, 1.0), streak * 0.75);
 
-        // Sun glitter.
+        // Foam: a lacy line where the water meets the sand, breathing in and
+        // out, with scattered flecks through the shallows.
+        float lace = (vnoise(vec3(p * 0.16, t * 0.5)) - 0.5) * 1.8 + sin(t * 1.1 + p.x * 0.02) * 0.45;
+        float foamEdge = 1.3 + lace;
+        float foam = 1.0 - smoothstep(foamEdge - 0.5, foamEdge, depth);
+        float flecks = smoothstep(0.56, 0.6, fbm(vec3(rot * p * 0.09, t * 0.3 + 9.0)));
+        foam = max(foam, flecks * (1.0 - smoothstep(3.0, 3.4, depth)) * 0.8);
+        col = mix(col, vec3(0.97, 0.99, 1.0), foam);
+
+        // Hard sun glints.
         vec3 refl = reflect(-viewDir, n);
-        float spec = pow(max(dot(refl, uSun), 0.0), 220.0);
-        col += vec3(1.0, 0.95, 0.85) * spec * 2.4;
-        // Soft foam flecks on the crests.
-        float crest = smoothstep(0.75, 1.2, h0);
-        col = mix(col, vec3(0.9, 0.95, 0.97), crest * 0.35);
+        float spec = pow(max(dot(refl, uSun), 0.0), 260.0);
+        col += vec3(1.0, 0.98, 0.9) * smoothstep(0.25, 0.32, spec) * 0.7;
+
+        // Cel light on the surface so the swell reads as drawn bands.
+        col *= 0.88 + 0.22 * celBands(dot(n, uSun));
 
         gl_FragColor = vec4(col, 1.0);
         #include <fog_fragment>
@@ -118,13 +134,14 @@ export function createSea(): SeaHandles {
     [-640, 1400, 1.4],
     [80, 1700, -2.0]
   ];
-  const hullMat = new MeshLambertMaterial({ color: 0xf3efe6 });
-  const trimMat = new MeshLambertMaterial({ color: PAINT.sea });
-  const sailMat = new MeshLambertMaterial({ color: 0xffffff, side: DoubleSide });
+  const hullMat = toon({ color: 0xf3efe6 });
+  const trimMat = toon({ color: PAINT.sea });
+  const sailMat = toon({ color: 0xffffff, side: DoubleSide });
   boatSpots.forEach(([x, z, heading]) => {
     const boat = new Group();
     const hull = new Mesh(new BoxGeometry(3.2, 1.1, 9), hullMat);
     hull.position.y = 0.3;
+    addOutline(hull, 0.09);
     const trim = new Mesh(new BoxGeometry(3.4, 0.25, 9.2), trimMat);
     trim.position.y = 0.85;
     const mast = new Mesh(new BoxGeometry(0.16, 11, 0.16), trimMat);

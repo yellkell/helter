@@ -14,7 +14,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
-  MeshLambertMaterial,
+  MeshToonMaterial,
   PlaneGeometry,
   Quaternion,
   RingGeometry,
@@ -34,7 +34,7 @@ import {
   TRACK_WIDTH
 } from '../constants.js';
 import { HelterPath, type PathSample } from '../ride/path.js';
-import { LIGHT_GLSL, makeStripeTexture, makeTextTexture, NOISE_GLSL } from './fx.js';
+import { addOutline, LIGHT_GLSL, makeStripeTexture, makeTextTexture, NOISE_GLSL, toon } from './fx.js';
 
 export interface TrackHandles {
   group: Group;
@@ -127,14 +127,14 @@ function createBedMaterial(uTime: { value: number }): ShaderMaterial {
         float x = (vUv.x - 0.5) * uWidth; // metres across, - outer .. + tower
         float s = vUv.y;                  // metres along
 
-        vec3 cream = vec3(0.93, 0.85, 0.68);
-        vec3 red = vec3(0.78, 0.09, 0.07);
-        vec3 gold = vec3(0.92, 0.70, 0.18);
+        vec3 cream = vec3(0.96, 0.88, 0.70);
+        vec3 red = vec3(0.82, 0.10, 0.08);
+        vec3 gold = vec3(0.95, 0.72, 0.16);
 
         // Painted boards: faint plank seams every 0.4m along, wood grain.
         vec3 albedo = cream;
         float grain = fbm(vec3(x * 9.0, s * 0.9, 1.0)) - 0.5;
-        albedo *= 1.0 + grain * 0.10;
+        albedo *= 1.0 + grain * 0.04;
         float seam = 1.0 - lineAt(fract(s / 0.4) * 0.4, 0.2, 0.006) * 0.35;
         albedo *= seam;
         // Varnish darkens a touch toward the edges where feet don't polish it.
@@ -198,7 +198,8 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   group.add(bed);
 
   // Lips: tall on the outside (that's where you'd fly off), low by the tower.
-  const lipMaterial = new MeshLambertMaterial({ color: PAINT.red, side: DoubleSide });
+  const lipMaterial = toon({ color: PAINT.red, side: DoubleSide });
+  const inkMaterial = toon({ color: PAINT.ink });
   const outerLip = new Mesh(
     buildStrip(samples, distances, at(-half, 0.0), at(-half, OUTER_LIP), inwardNormal),
     lipMaterial
@@ -210,7 +211,7 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   group.add(outerLip, innerLip);
 
   // Cream cap boards along the lip tops.
-  const capMaterial = new MeshLambertMaterial({ color: 0xf3e8d2, side: DoubleSide });
+  const capMaterial = toon({ color: 0xf3e8d2, side: DoubleSide });
   group.add(
     new Mesh(
       buildStrip(samples, distances, at(-half - 0.12, OUTER_LIP), at(-half + 0.12, OUTER_LIP), upNormal),
@@ -223,14 +224,14 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   );
 
   // Underside + outer skirt so the slide has thickness from below.
-  const underMaterial = new MeshLambertMaterial({ color: 0x6b2a22, side: DoubleSide });
+  const underMaterial = toon({ color: 0x8a3128, side: DoubleSide });
   group.add(
     new Mesh(buildStrip(samples, distances, at(-half, -0.16), at(half, -0.16), downNormal), underMaterial),
     new Mesh(buildStrip(samples, distances, at(-half, -0.16), at(-half, 0.0), outwardNormal), underMaterial)
   );
 
   // Gold handrails riding the lip tops.
-  const railMaterial = new MeshLambertMaterial({ color: PAINT.gold });
+  const railMaterial = toon({ color: PAINT.gold });
   const railPoints = (dx: number, dy: number): Vector3[] =>
     samples.filter((_, i) => i % 2 === 0).map((s) => at(dx, dy)(s, new Vector3()));
   const makeRail = (dx: number, dy: number, radius: number): Mesh => {
@@ -238,10 +239,47 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
     const geometry = new TubeGeometry(curve, Math.ceil(samples.length / 2), radius, 6, false);
     return new Mesh(geometry, railMaterial);
   };
-  group.add(makeRail(-half, OUTER_LIP + 0.06, 0.055), makeRail(half, INNER_LIP + 0.05, 0.045));
+  group.add(makeRail(-half, OUTER_LIP + 0.08, 0.085), makeRail(half, INNER_LIP + 0.06, 0.06));
+
+  // Ink rail posts up the outer lip, and pennant bunting slung from the rail
+  // — the whole spiral dressed like the front of a pier.
+  const postSamples = samples.filter((_, i) => i % 8 === 0);
+  const posts = new InstancedMesh(
+    new CylinderGeometry(0.045, 0.045, OUTER_LIP + 0.1, 6),
+    inkMaterial,
+    postSamples.length
+  );
+  const bunting = new InstancedMesh(makePennantGeometry(), toon({ side: DoubleSide }), postSamples.length * 2);
+  const buntingColors = [PAINT.red, PAINT.cream, PAINT.gold, PAINT.sea, PAINT.mint];
+  const pm = new Matrix4();
+  const pq = new Quaternion();
+  const pqFlag = new Quaternion();
+  const pp = new Vector3();
+  const pOne = new Vector3(1, 1, 1);
+  const pColor = new Color();
+  const yAxisP = new Vector3(0, 1, 0);
+  postSamples.forEach((s, i) => {
+    pq.setFromAxisAngle(yAxisP, s.yaw);
+    at(-half + 0.08, OUTER_LIP / 2 + 0.02)(s, pp);
+    pm.compose(pp, pq, pOne);
+    posts.setMatrixAt(i, pm);
+    // Two pennants between each pair of posts, hung just under the rail.
+    pqFlag.setFromAxisAngle(yAxisP, Math.PI / 2);
+    for (let k = 0; k < 2; k++) {
+      const idx = Math.min(samples.length - 1, i * 8 + 3 + k * 3);
+      const fs = samples[idx];
+      pq.setFromAxisAngle(yAxisP, fs.yaw).multiply(pqFlag);
+      at(-half + 0.1, OUTER_LIP + 0.02)(fs, pp);
+      pm.compose(pp, pq, pOne);
+      bunting.setMatrixAt(i * 2 + k, pm);
+      pColor.setHex(buntingColors[(i * 2 + k) % buntingColors.length]);
+      bunting.setColorAt(i * 2 + k, pColor);
+    }
+  });
+  group.add(posts, bunting);
 
   // Iron brackets back to the tower wall — every few metres of the spiral.
-  const ironMaterial = new MeshLambertMaterial({ color: 0x2a2624 });
+  const ironMaterial = toon({ color: 0x2a2624 });
   const helixSamples = samples.filter((s, i) => !s.flat && i % 10 === 0);
   const brackets = new InstancedMesh(new BoxGeometry(1, 1, 1), ironMaterial, helixSamples.length * 2);
   const m = new Matrix4();
@@ -293,6 +331,18 @@ export function createSlideTrack(path: HelterPath): TrackHandles {
   return { group, uniforms: { uTime }, arrivalRing };
 }
 
+/** A little downward-pointing pennant, hung by its top edge at the origin. */
+function makePennantGeometry(): BufferGeometry {
+  const g = new BufferGeometry();
+  g.setAttribute(
+    'position',
+    new Float32BufferAttribute([-0.2, 0, 0, 0.2, 0, 0, 0, -0.46, 0], 3)
+  );
+  g.setAttribute('normal', new Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
+  g.setAttribute('uv', new Float32BufferAttribute([0, 1, 1, 1, 0.5, 0], 2));
+  return g;
+}
+
 function createFinishArch(end: PathSample): Group {
   const arch = new Group();
   const ahead = end.position.clone().addScaledVector(end.forward, 5.2);
@@ -300,7 +350,7 @@ function createFinishArch(end: PathSample): Group {
   arch.position.copy(ahead);
   arch.rotation.y = end.yaw;
 
-  const postMat = new MeshLambertMaterial({ color: PAINT.red });
+  const postMat = toon({ color: PAINT.red });
   const postGeo = new CylinderGeometry(0.16, 0.16, 3.6, 10);
   [-2.2, 2.2].forEach((x) => {
     const post = new Mesh(postGeo, postMat);
@@ -309,7 +359,7 @@ function createFinishArch(end: PathSample): Group {
   });
   const sign = new Mesh(
     new PlaneGeometry(5.2, 1.3),
-    new MeshLambertMaterial({
+    toon({
       map: makeTextTexture('WELL DONE  -  MIND THE STEP', {
         color: '#e8322e',
         background: '#fff4e0',
@@ -328,7 +378,7 @@ function createFinishArch(end: PathSample): Group {
 // ---------------------------------------------------------------------------
 
 let gateGeometry: BoxGeometry | null = null;
-const gateMaterials = new Map<number, MeshLambertMaterial>();
+const gateMaterials = new Map<number, MeshToonMaterial>();
 let pennantGeometry: ConeGeometry | null = null;
 
 function toHex(color: number): string {
@@ -344,13 +394,14 @@ export function createGate(color: number): Group {
   pennantGeometry ??= new ConeGeometry(0.16, 0.5, 4);
   let material = gateMaterials.get(color);
   if (!material) {
-    material = new MeshLambertMaterial({ map: makeStripeTexture(toHex(color), '#fff4e0', 6) });
+    material = toon({ map: makeStripeTexture(toHex(color), '#fff4e0', 6) });
     gateMaterials.set(color, material);
   }
   const group = new Group();
   const board = new Mesh(gateGeometry, material);
+  addOutline(board, 0.035);
   group.add(board);
-  const pennant = new Mesh(pennantGeometry, new MeshLambertMaterial({ color: PAINT.gold }));
+  const pennant = new Mesh(pennantGeometry, toon({ color: PAINT.gold }));
   pennant.position.y = BARRIER_SIZE.h / 2 + 0.25;
   group.add(pennant);
   return group;

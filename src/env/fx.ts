@@ -1,20 +1,32 @@
 import {
   AdditiveBlending,
+  BackSide,
+  BufferGeometry,
   CanvasTexture,
   Color,
+  DataTexture,
   DoubleSide,
   DynamicDrawUsage,
   Euler,
+  Float32BufferAttribute,
   InstancedMesh,
   Matrix4,
+  Mesh,
   MeshBasicMaterial,
+  MeshToonMaterial,
+  type MeshToonMaterialParameters,
+  NearestFilter,
   PlaneGeometry,
   Quaternion,
   RepeatWrapping,
+  RGBAFormat,
+  ShaderMaterial,
   Sprite,
   SpriteMaterial,
   SRGBColorSpace,
   Texture,
+  UniformsLib,
+  UniformsUtils,
   Vector3
 } from '@iwsdk/core';
 
@@ -178,22 +190,144 @@ export const NOISE_GLSL = /* glsl */ `
 `;
 
 /**
- * Shared GLSL: a simple sun + sky lambert for the custom painted materials,
- * so the shader-built tower and slide sit in the same light as the Lambert
- * meshes around them. Colours are linear.
+ * Shared GLSL: cel lighting for the custom painted materials. Sunlight is
+ * quantised into three flat bands (lit / half / shadow) with a crisp edge,
+ * matching the toon gradient the standard meshes use, so the shader-built
+ * tower, slide, sea and land read as one drawing. Colours are linear.
  */
 export const LIGHT_GLSL = /* glsl */ `
   const vec3 SUN_DIR = vec3(${SUN_DIR.x.toFixed(4)}, ${SUN_DIR.y.toFixed(4)}, ${SUN_DIR.z.toFixed(4)});
-  const vec3 SUN_COL = vec3(1.0, 0.94, 0.84) * 2.6;
-  const vec3 SKY_COL = vec3(0.45, 0.62, 0.86) * 0.9;
-  const vec3 GROUND_COL = vec3(0.34, 0.36, 0.28) * 0.9;
+  const vec3 SUN_COL = vec3(1.0, 0.95, 0.86) * 0.95;
+  const vec3 SKY_COL = vec3(0.50, 0.66, 0.90) * 0.55;
+  const vec3 GROUND_COL = vec3(0.36, 0.40, 0.32) * 0.45;
+  float celBands(float ndl) {
+    float a = smoothstep(0.02, 0.06, ndl);
+    float b = smoothstep(0.42, 0.46, ndl);
+    return 0.10 + a * 0.45 + b * 0.45;
+  }
   vec3 shade(vec3 albedo, vec3 n) {
-    float ndl = max(dot(n, SUN_DIR), 0.0);
+    float ndl = dot(n, SUN_DIR);
     float hemi = n.y * 0.5 + 0.5;
     vec3 ambient = mix(GROUND_COL, SKY_COL, hemi);
-    return albedo * (SUN_COL * ndl + ambient);
+    return albedo * (SUN_COL * celBands(ndl) + ambient);
   }
 `;
+
+// ---------------------------------------------------------------------------
+// Toon materials + ink outlines — the cel-shaded look for standard meshes.
+// ---------------------------------------------------------------------------
+
+let gradientMap: DataTexture | null = null;
+
+/** Three flat lighting steps for MeshToonMaterial, shared by every toon mesh. */
+export function getGradientMap(): DataTexture {
+  if (gradientMap) return gradientMap;
+  const steps = [0.28, 0.62, 1.0];
+  const data = new Uint8Array(steps.length * 4);
+  steps.forEach((v, i) => {
+    data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = Math.round(v * 255);
+    data[i * 4 + 3] = 255;
+  });
+  gradientMap = new DataTexture(data, steps.length, 1, RGBAFormat);
+  gradientMap.minFilter = NearestFilter;
+  gradientMap.magFilter = NearestFilter;
+  gradientMap.generateMipmaps = false;
+  gradientMap.needsUpdate = true;
+  return gradientMap;
+}
+
+/** A MeshToonMaterial with the shared gradient — the default for solid props. */
+export function toon(params: MeshToonMaterialParameters = {}): MeshToonMaterial {
+  return new MeshToonMaterial({ gradientMap: getGradientMap(), ...params });
+}
+
+const outlineMaterials = new Map<number, ShaderMaterial>();
+
+/**
+ * Ink outline material: back faces pushed out along their normals by
+ * `thickness` metres, drawn in flat ink. Works on instanced meshes too.
+ */
+export function outlineMaterial(thickness: number): ShaderMaterial {
+  let material = outlineMaterials.get(thickness);
+  if (material) return material;
+  material = new ShaderMaterial({
+    side: BackSide,
+    fog: true,
+    uniforms: UniformsUtils.merge([
+      UniformsLib.fog,
+      { uThickness: { value: thickness }, uColor: { value: new Color(PAINT.ink) } }
+    ]),
+    vertexShader: /* glsl */ `
+      uniform float uThickness;
+      #include <fog_pars_vertex>
+      void main() {
+        vec3 p = position + normalize(normal) * uThickness;
+        #ifdef USE_INSTANCING
+          vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(p, 1.0);
+        #else
+          vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+        #endif
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      #include <fog_pars_fragment>
+      void main() {
+        gl_FragColor = vec4(uColor, 1.0);
+        #include <fog_fragment>
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `
+  });
+  outlineMaterials.set(thickness, material);
+  return material;
+}
+
+/**
+ * Give a mesh an ink outline as a child that shares its geometry (and, for
+ * instanced meshes, its instance matrices). Returns the outline so callers
+ * that change `count` later can keep it in sync.
+ */
+export function addOutline(mesh: Mesh | InstancedMesh, thickness: number): Mesh | InstancedMesh {
+  const material = outlineMaterial(thickness);
+  let outline: Mesh | InstancedMesh;
+  if ((mesh as InstancedMesh).isInstancedMesh) {
+    const source = mesh as InstancedMesh;
+    const inst = new InstancedMesh(source.geometry, material, source.instanceMatrix.count);
+    inst.instanceMatrix = source.instanceMatrix;
+    inst.count = source.count;
+    inst.frustumCulled = source.frustumCulled;
+    outline = inst;
+  } else {
+    outline = new Mesh(mesh.geometry, material);
+  }
+  outline.name = 'outline';
+  mesh.add(outline);
+  return outline;
+}
+
+/** Concatenate non-indexed geometries with position / normal / uv. */
+export function mergeGeometries(parts: BufferGeometry[]): BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  for (const part of parts) {
+    const g = part.index ? part.toNonIndexed() : part;
+    positions.push(...Array.from(g.attributes.position.array as ArrayLike<number>));
+    normals.push(...Array.from(g.attributes.normal.array as ArrayLike<number>));
+    const uv = g.attributes.uv;
+    if (uv) uvs.push(...Array.from(uv.array as ArrayLike<number>));
+    else for (let i = 0; i < g.attributes.position.count; i++) uvs.push(0, 0);
+  }
+  const merged = new BufferGeometry();
+  merged.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+  merged.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+  return merged;
+}
 
 /** Vertex-shader boilerplate: world position, normal, fog, and mvPosition. */
 export const LIT_VERTEX_GLSL = /* glsl */ `

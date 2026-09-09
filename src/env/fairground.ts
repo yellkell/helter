@@ -12,7 +12,6 @@ import {
   LineSegments,
   Matrix4,
   Mesh,
-  MeshLambertMaterial,
   PlaneGeometry,
   Quaternion,
   ShaderMaterial,
@@ -25,7 +24,7 @@ import {
 } from '@iwsdk/core';
 
 import { PAINT } from '../constants.js';
-import { LIGHT_GLSL, mulberry32, NOISE_GLSL } from './fx.js';
+import { addOutline, LIGHT_GLSL, mulberry32, NOISE_GLSL, toon } from './fx.js';
 import { createStripeMaterial } from './tower.js';
 
 export interface FairgroundHandles {
@@ -73,10 +72,12 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
       createStripeMaterial({ colorA: PAINT.cream, colorB: color, stripes: 12, wear: 0.04 })
     );
     roof.position.y = r * 0.55 + r * 0.35;
-    const pole = new Mesh(new CylinderGeometry(0.08, 0.08, r * 0.6, 6), new MeshLambertMaterial({ color: 0xf6f1e6 }));
+    const pole = new Mesh(new CylinderGeometry(0.08, 0.08, r * 0.6, 6), toon({ color: 0xf6f1e6 }));
     pole.position.y = r * 0.9 + r * 0.3;
-    const pennant = new Mesh(new PlaneGeometry(1.2, 0.6), new MeshLambertMaterial({ color, side: DoubleSide }));
+    const pennant = new Mesh(new PlaneGeometry(1.2, 0.6), toon({ color, side: DoubleSide }));
     pennant.position.set(0.6, r * 0.9 + r * 0.55, 0);
+    addOutline(wall, 0.1);
+    addOutline(roof, 0.1);
     tent.add(wall, roof, pole, pennant);
     tent.position.set(x, 0, z);
     tent.rotation.y = rnd() * Math.PI;
@@ -89,9 +90,10 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   const wheelRoot = new Group();
   wheelRoot.position.set(-118, wheelRadius + 6, 92);
   wheelRoot.rotation.y = 0.9;
-  const steel = new MeshLambertMaterial({ color: 0xf3efe6 });
+  const steel = toon({ color: 0xf3efe6 });
   const rim = new Mesh(new TorusGeometry(wheelRadius, 0.45, 10, 72), steel);
   const rimInner = new Mesh(new TorusGeometry(wheelRadius - 3, 0.3, 8, 72), steel);
+  addOutline(rim, 0.14);
   wheel.add(rim, rimInner);
   const spokeGeo = new BoxGeometry(0.28, wheelRadius * 2, 0.28);
   const gondolaGeo = new BoxGeometry(2.6, 2.2, 2.2);
@@ -106,20 +108,20 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     const a = (i / 24) * Math.PI * 2;
     const gondola = new Mesh(
       gondolaGeo,
-      new MeshLambertMaterial({ color: gondolaColors[i % gondolaColors.length] })
+      toon({ color: gondolaColors[i % gondolaColors.length] })
     );
     gondola.position.set(Math.cos(a) * wheelRadius, Math.sin(a) * wheelRadius, 0);
     wheel.add(gondola);
   }
   wheelRoot.add(wheel);
   // Hub and A-frame legs.
-  const hub = new Mesh(new CylinderGeometry(1.2, 1.2, 3.2, 16), new MeshLambertMaterial({ color: PAINT.red }));
+  const hub = new Mesh(new CylinderGeometry(1.2, 1.2, 3.2, 16), toon({ color: PAINT.red }));
   hub.rotation.x = Math.PI / 2;
   wheelRoot.add(hub);
   const legGeo = new BoxGeometry(0.9, wheelRadius + 8, 0.9);
   [-1, 1].forEach((side) => {
     [-1, 1].forEach((front) => {
-      const leg = new Mesh(legGeo, new MeshLambertMaterial({ color: PAINT.red }));
+      const leg = new Mesh(legGeo, toon({ color: PAINT.red }));
       leg.position.set(side * 7, -(wheelRadius + 6) / 2 + 0.5, front * 2.6);
       leg.rotation.z = -side * 0.27;
       leg.rotation.x = front * 0.1;
@@ -131,10 +133,10 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   // --- Bunting around the plaza ---------------------------------------------
   const poleCount = 14;
   const poleRadius = 44;
-  const poleMat = new MeshLambertMaterial({ color: 0xf6f1e6 });
+  const poleMat = toon({ color: 0xf6f1e6 });
   const poleGeo = new CylinderGeometry(0.09, 0.11, 6, 8);
   const flagColors = [PAINT.red, PAINT.gold, PAINT.sea, PAINT.cream, PAINT.mint];
-  const flags = new InstancedMesh(new PlaneGeometry(0.5, 0.65), new MeshLambertMaterial({ side: DoubleSide }), poleCount * 12);
+  const flags = new InstancedMesh(new PlaneGeometry(0.5, 0.65), toon({ side: DoubleSide }), poleCount * 12);
   const linePts: number[] = [];
   const m = new Matrix4();
   const q = new Quaternion();
@@ -148,7 +150,7 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     const pole = new Mesh(poleGeo, poleMat);
     pole.position.set(Math.cos(a0) * poleRadius, 3, Math.sin(a0) * poleRadius);
     group.add(pole);
-    const finialBall = new Mesh(new SphereGeometry(0.22, 10, 8), new MeshLambertMaterial({ color: PAINT.gold }));
+    const finialBall = new Mesh(new SphereGeometry(0.22, 10, 8), toon({ color: PAINT.gold }));
     finialBall.position.set(pole.position.x, 6.1, pole.position.z);
     group.add(finialBall);
     // A sagging string of flags to the next pole.
@@ -189,7 +191,7 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
 
   // --- Beach umbrellas and a ticket booth ------------------------------------
   const umbrellaCount = 18;
-  const canopies = new InstancedMesh(new ConeGeometry(1.6, 0.7, 10), new MeshLambertMaterial({ side: DoubleSide }), umbrellaCount);
+  const canopies = new InstancedMesh(new ConeGeometry(1.6, 0.7, 10), toon({ side: DoubleSide }), umbrellaCount);
   const stems = new InstancedMesh(new CylinderGeometry(0.04, 0.04, 2.2, 5), poleMat, umbrellaCount);
   for (let i = 0; i < umbrellaCount; i++) {
     const x = (rnd() - 0.5) * 520;
@@ -205,11 +207,13 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
     m.compose(p, q, one);
     stems.setMatrixAt(i, m);
   }
+  addOutline(canopies, 0.05);
   group.add(canopies, stems);
 
   const booth = new Group();
-  const boothBody = new Mesh(new BoxGeometry(4, 3, 3), new MeshLambertMaterial({ color: PAINT.cream }));
+  const boothBody = new Mesh(new BoxGeometry(4, 3, 3), toon({ color: PAINT.cream }));
   boothBody.position.y = 1.5;
+  addOutline(boothBody, 0.07);
   const boothRoof = new Mesh(
     new ConeGeometry(3.4, 1.6, 4, 1),
     createStripeMaterial({ colorA: PAINT.red, colorB: PAINT.cream, stripes: 8, wear: 0.03 })
@@ -225,7 +229,7 @@ export function createFairground(heightAt: (x: number, z: number) => number): Fa
   const gullCount = 14;
   const gulls = new InstancedMesh(
     new PlaneGeometry(1.4, 0.5),
-    new MeshLambertMaterial({ color: 0xffffff, side: DoubleSide }),
+    toon({ color: 0xffffff, side: DoubleSide }),
     gullCount
   );
   gulls.frustumCulled = false;
@@ -268,7 +272,7 @@ function createPavingMaterial(): ShaderMaterial {
         float mortar = min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y));
         float line = 1.0 - smoothstep(0.0, 0.06, mortar);
         float tone = hash13(vec3(ring, floor(around), 1.0));
-        vec3 stone = mix(vec3(0.36, 0.31, 0.25), vec3(0.47, 0.41, 0.33), tone);
+        vec3 stone = mix(vec3(0.40, 0.34, 0.27), vec3(0.50, 0.44, 0.35), step(0.5, tone));
         stone *= 1.0 + (fbm(vWorld * 0.4) - 0.5) * 0.25;
         vec3 albedo = mix(stone, vec3(0.2, 0.18, 0.16), line * 0.8);
         // A red ring marks the slide's exit run-out.

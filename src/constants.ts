@@ -35,7 +35,7 @@ export const VIEW_MODE = params?.get('view') ?? '';
 /** The helix the rig rides: centerline radius and how steeply it drops. */
 export const SLIDE_RADIUS = 18; // metres from the tower axis to the middle of the slide
 export const SLIDE_PITCH = 26 * (Math.PI / 180); // slope along the slide's own arc
-export const SLIDE_SPEED = IS_CALM ? 13 : 20; // m/s along the slide (DOWN's speed)
+export const SLIDE_SPEED = IS_CALM ? 11 : 16; // m/s along the slide (DOWN ran 20 — the spiral wants a touch less)
 export const SLIDE_ACCEL_TIME = 1.2; // ease-in seconds for comfort
 
 /** Flat run-up at the start of every tier, and a flat arrival strip at its end. */
@@ -87,4 +87,4 @@ export const PAINT = {
 };
 
 export const GATE_COLORS = [PAINT.red, PAINT.sea, PAINT.gold, PAINT.mint];
-export const FOG_COLOR = 0xd3e3ef;
+export const FOG_COLOR = 0xdcedf7;

@@ -9,7 +9,6 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
-  MeshLambertMaterial,
   PlaneGeometry,
   Quaternion,
   ShaderMaterial,
@@ -31,7 +30,7 @@ import {
   TRACK_WIDTH
 } from '../constants.js';
 import { helterPath } from '../ride/path.js';
-import { LIGHT_GLSL, makeGlow, NOISE_GLSL } from './fx.js';
+import { addOutline, LIGHT_GLSL, makeGlow, NOISE_GLSL, toon } from './fx.js';
 
 export interface TowerHandles {
   group: Group;
@@ -159,25 +158,26 @@ export function createTower(): TowerHandles {
     createStripeMaterial({
       colorA: PAINT.cream,
       colorB: PAINT.red,
-      stripes: 26,
+      stripes: 22,
       twist: -0.035, // climbs the way the slide falls
-      wear: 0.05
+      wear: 0.02
     })
   );
   drum.position.y = TOWER_TOP / 2;
+  addOutline(drum, 0.7);
   group.add(drum);
 
   // Boarded-up base band so the drum meets the plinth in something solid.
   const skirt = new Mesh(
     new CylinderGeometry(TOWER_RADIUS + 0.35, TOWER_RADIUS + 0.6, 6, 72, 1, true),
-    new MeshLambertMaterial({ color: PAINT.darkRed, side: DoubleSide })
+    toon({ color: 0x8a3128, side: DoubleSide })
   );
   skirt.position.y = 3;
   group.add(skirt);
 
   const plinth = new Mesh(
     new CylinderGeometry(SLIDE_RADIUS + 5, SLIDE_RADIUS + 5.6, 0.6, 96),
-    new MeshLambertMaterial({ color: 0xb9ab95 })
+    toon({ color: 0xb9ab95 })
   );
   plinth.position.y = 0.3;
   group.add(plinth);
@@ -188,19 +188,21 @@ export function createTower(): TowerHandles {
     createStripeMaterial({ colorA: PAINT.red, colorB: PAINT.cream, stripes: 18, wear: 0.05 })
   );
   roof.position.y = TOWER_TOP + ROOF_HEIGHT / 2;
+  addOutline(roof, 0.7);
   group.add(roof);
 
   const eave = new Mesh(
     new TorusGeometry(TOWER_RADIUS + 0.4, 0.55, 10, 96),
-    new MeshLambertMaterial({ color: PAINT.gold })
+    toon({ color: PAINT.gold })
   );
   eave.rotation.x = Math.PI / 2;
   eave.position.y = TOWER_TOP;
   group.add(eave);
 
   // Gold finial + glare, flagpole and a flag that waves in the shader.
-  const finial = new Mesh(new SphereGeometry(1.7, 24, 16), new MeshLambertMaterial({ color: PAINT.gold, emissive: 0x4a3808 }));
+  const finial = new Mesh(new SphereGeometry(1.7, 24, 16), toon({ color: PAINT.gold, emissive: 0x4a3808 }));
   finial.position.y = TOWER_TOP + ROOF_HEIGHT + 1.2;
+  addOutline(finial, 0.12);
   group.add(finial);
   const glare = makeGlow(0xfff0b0, 14, 0.35);
   glare.position.copy(finial.position);
@@ -208,7 +210,7 @@ export function createTower(): TowerHandles {
 
   const pole = new Mesh(
     new CylinderGeometry(0.14, 0.14, 12, 8),
-    new MeshLambertMaterial({ color: 0xf0f0f0 })
+    toon({ color: 0xf0f0f0 })
   );
   pole.position.y = finial.position.y + 6.5;
   group.add(pole);
@@ -268,21 +270,21 @@ export function createTower(): TowerHandles {
   const balconyA1 = helixStartAngle + 0.02;
   const balcony = new Mesh(
     annulusSector(balconyInner, balconyOuter, balconyA0, balconyA1, 72),
-    new MeshLambertMaterial({ color: 0xead9bd, side: DoubleSide })
+    toon({ color: 0xead9bd, side: DoubleSide })
   );
   balcony.position.y = TIER_HEIGHTS[0] - 0.04;
   group.add(balcony);
   const balconyEdge = new Mesh(
     annulusSector(balconyOuter - 0.35, balconyOuter, balconyA0, balconyA1, 72),
-    new MeshLambertMaterial({ color: PAINT.red, side: DoubleSide })
+    toon({ color: PAINT.red, side: DoubleSide })
   );
   balconyEdge.position.y = TIER_HEIGHTS[0] - 0.02;
   group.add(balconyEdge);
 
   // Railing: a gold rail on white posts along the outer edge, and closed
   // ends so nobody wanders off the back of the walkway.
-  const railMat = new MeshLambertMaterial({ color: PAINT.gold });
-  const postMat = new MeshLambertMaterial({ color: 0xf6f1e6 });
+  const railMat = toon({ color: PAINT.gold });
+  const postMat = toon({ color: 0xf6f1e6 });
   const railRadius = balconyOuter - 0.18;
   const rail = new Mesh(
     new TorusGeometry(railRadius, 0.06, 8, 96, balconyA1 - balconyA0),
@@ -330,8 +332,8 @@ export function createTower(): TowerHandles {
 
   // Landing bays: a broader shelf under each tier change so the stop reads
   // as arriving somewhere, not just pausing mid-slide.
-  const bayMat = new MeshLambertMaterial({ color: 0xead9bd, side: DoubleSide });
-  const bayTrim = new MeshLambertMaterial({ color: PAINT.red, side: DoubleSide });
+  const bayMat = toon({ color: 0xead9bd, side: DoubleSide });
+  const bayTrim = toon({ color: PAINT.red, side: DoubleSide });
   helterPath.tiers.forEach((_tier, i) => {
     if (i === 0) return; // the balcony is tier one's bay
     const seg = helterPath.segments[i * 3]; // run-up segment of this tier
